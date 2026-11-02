@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>Envahisseurs</title></head>
+<body>
+<script src="../commun/arcade.js"></script>
+<script>
+'use strict';
+// ============================================================
+//  ENVAHISSEURS — dans l'esprit de Space Invaders (1978)
+// ============================================================
+const A = Arcade, W = 224, H = 288;
+const CANNON_Y = 240, GROUND = 252, SHIELD_Y = 208, UFO_Y = 34;
+const GREEN = '#30ff30', P2COL = '#30d8ff';
+const S = s => s.split('|');
+const X = { X: '#fff' };
+// Sprites des envahisseurs (2 images d'animation chacun)
+const INV = [
+  { pts: 30, w: 8, f: [A.sprite(S('...XX...|..XXXX..|.XXXXXX.|XX.XX.XX|XXXXXXXX|..X..X..|.X.XX.X.|X.X..X.X'), X),
+                       A.sprite(S('...XX...|..XXXX..|.XXXXXX.|XX.XX.XX|XXXXXXXX|.X.XX.X.|X......X|.X....X.'), X)] },
+  { pts: 20, w: 11, f: [A.sprite(S('..X.....X..|...X...X...|..XXXXXXX..|.XX.XXX.XX.|XXXXXXXXXXX|X.XXXXXXX.X|X.X.....X.X|...XX.XX...'), X),
+                        A.sprite(S('..X.....X..|X..X...X..X|X.XXXXXXX.X|XXX.XXX.XXX|XXXXXXXXXXX|.XXXXXXXXX.|..X.....X..|.X.......X.'), X)] },
+  { pts: 10, w: 12, f: [A.sprite(S('....XXXX....|.XXXXXXXXXX.|XXXXXXXXXXXX|XXX..XX..XXX|XXXXXXXXXXXX|...XX..XX...|..XX.XX.XX..|XX........XX'), X),
+                        A.sprite(S('....XXXX....|.XXXXXXXXXX.|XXXXXXXXXXXX|XXX..XX..XXX|XXXXXXXXXXXX|..XXX..XXX..|.XX..XX..XX.|..XX....XX..'), X)] }
+];
+const ROWTYPE = [0, 1, 1, 2, 2];
+const BOOM = A.sprite(S('....X...X....|.X...X.X...X.|..X.......X..|...X.....X...|XX.........XX|...X.....X...|..X.X...X.X..|.X...X.X...X.'), X);
+const CANNON_ART = S('......X......|.....XXX.....|.....XXX.....|.XXXXXXXXXXX.|XXXXXXXXXXXXX|XXXXXXXXXXXXX|XXXXXXXXXXXXX|XXXXXXXXXXXXX');
+const CANNON = [A.sprite(CANNON_ART, { X: GREEN }), A.sprite(CANNON_ART, { X: P2COL })];
+const CBOOM = [S('.....X.......|..X.....X..X.|....X.X......|.X..XXX..X...|..XXXXXXX.X..|XXXXXXXXXXXXX'),
+               S('X......X..X..|...X.X....X..|.X.......X..X|....XX.X.....|X.XXXXXX.XX..|.XXXXXXXXXXX.')];
+const CBOOMS = [CBOOM.map(a => A.sprite(a, { X: GREEN })), CBOOM.map(a => A.sprite(a, { X: P2COL }))];
+const UFO = A.sprite(S('.....XXXXXX.....|...XXXXXXXXXX...|..XXXXXXXXXXXX..|.XX.XX.XX.XX.XX.|XXXXXXXXXXXXXXXX|..XXX..XX..XXX..|...X........X...'), { X: '#ff3030' });
+
+// ---------- Boucliers destructibles au pixel ----------
+function makeShield(x) {
+  const g = new Uint8Array(22 * 16), c = document.createElement('canvas'); c.width = 22; c.height = 16;
+  const k = c.getContext('2d'); k.fillStyle = GREEN;
+  for (let y = 0; y < 16; y++) for (let xx = 0; xx < 22; xx++) {
+    let on = true;
+    if (y < 4 && (xx < 4 - y || xx > 17 + y)) on = false;
+    if (y >= 12 && xx >= 6 && xx <= 15) on = false;
+    if (y === 11 && xx >= 7 && xx <= 14) on = false;
+    if (on) { g[y * 22 + xx] = 1; k.fillRect(xx, y, 1, 1); }
+  }
+  return { x, y: SHIELD_Y, g, c, k };
+}
+function shieldAt(px, py) {
+  for (const s of w.shields) {
+    const lx = Math.floor(px - s.x), ly = Math.floor(py - s.y);
+    if (lx >= 0 && lx < 22 && ly >= 0 && ly < 16 && s.g[ly * 22 + lx]) return s;
+  }
+  return null;
+}
+function splat(s, px, py, r = 3) {
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    if (dx * dx + dy * dy > r * r + 1 || Math.random() < .35) continue;
+    const lx = Math.floor(px - s.x) + dx, ly = Math.floor(py - s.y) + dy;
+    if (lx >= 0 && lx < 22 && ly >= 0 && ly < 16) { s.g[ly * 22 + lx] = 0; s.k.clearRect(lx, ly, 1, 1); }
+  }
+}
+function eraseRect(x, y, ww, hh) {
+  for (const s of w.shields) {
+    if (!A.overlap(x, y, ww, hh, s.x, s.y, 22, 16)) continue;
+    for (let yy = Math.max(0, Math.floor(y - s.y)); yy < Math.min(16, Math.ceil(y + hh - s.y)); yy++)
+      for (let xx = Math.max(0, Math.floor(x - s.x)); xx < Math.min(22, Math.ceil(x + ww - s.x)); xx++) { s.g[yy * 22 + xx] = 0; s.k.clearRect(xx, yy, 1, 1); }
+  }
+}
+
+// ---------- Monde ----------
+let w = null;
+function newWave(wave) {
+  w.wave = wave; w.inv = [];
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 11; c++) w.inv.push({ r, c, t: ROWTYPE[r], alive: true });
+  w.fx = 24; w.fy = 56 + Math.min(wave - 1, 6) * 8; w.dir = 1; w.dropNext = false;
+  w.stepT = .5; w.frame = 0; w.note = 0; w.ebul = []; w.shotT = 2.5; w.clearT = 0;
+  w.shields = [32, 77, 122, 167].map(makeShield);
+}
+const invX = v => w.fx + v.c * 16 + (12 - INV[v.t].w) / 2;
+const invY = v => w.fy + v.r * 16;
+
+function init(n) {
+  w = { cannons: [], ufo: null, ufoT: 22, parts: [], expl: [], pops: [], t: 0 };
+  for (let i = 0; i < n; i++) w.cannons.push({ pid: i, home: n === 1 ? 104 : (i ? 150 : 60), x: 0, st: 'ok', t: 0, bul: null, shots: 0 });
+  w.cannons.forEach(c => c.x = c.home);
+  newWave(1);
+  return w;
+}
+
+function update(_, dt) {
+  w.t += dt; A.updParts(w.parts, dt);
+  w.expl.forEach(e => e.t -= dt); w.expl = w.expl.filter(e => e.t > 0);
+  w.pops.forEach(p => p.t -= dt); w.pops = w.pops.filter(p => p.t > 0);
+  if (w.clearT > 0) { if ((w.clearT -= dt) <= 0) newWave(w.wave + 1); }
+  for (const c of w.cannons) updCannon(c, dt);
+  const anyOk = w.cannons.some(c => c.st === 'ok');
+  const alive = w.inv.filter(v => v.alive);
+  if (anyOk && alive.length) {
+    // marche de la formation : plus il reste d'envahisseurs, plus c'est lent
+    w.stepT -= dt;
+    if (w.stepT <= 0) { w.stepT += Math.max(.012, alive.length * .016); step(alive); }
+    // tirs ennemis
+    if ((w.shotT -= dt) <= 0 && w.ebul.length < 2 + Math.min(w.wave, 3)) {
+      w.shotT = A.rand(.6, 1.4) * Math.max(.45, 1 - w.wave * .07);
+      const cols = {}; for (const v of alive) if (!cols[v.c] || cols[v.c].r < v.r) cols[v.c] = v;
+      const list = Object.values(cols), tgt = A.pick(w.cannons.filter(c => c.st === 'ok'));
+      let sh = A.pick(list);
+      if (tgt && Math.random() < .5) sh = list.reduce((a, b) => Math.abs(invX(a) + 6 - tgt.x) < Math.abs(invX(b) + 6 - tgt.x) ? a : b);
+      w.ebul.push({ x: invX(sh) + INV[sh.t].w / 2, y: invY(sh) + 8, k: A.irand(0, 2) });
+    }
+  }
+  if (!alive.length && w.clearT <= 0) { w.clearT = 2; w.ebul = []; A.jingle('bonus'); }
+  updEnemyBullets(dt);
+  updUfo(dt, alive.length);
+}
+function step(alive) {
+  if (w.dropNext) { w.fy += 8; w.dir = -w.dir; w.dropNext = false; }
+  else w.fx += 2 * w.dir;
+  w.frame ^= 1;
+  A.tone([98, 87, 78, 73][w.note++ % 4], .09, 'square', .1);
+  let minX = 999, maxX = -999, maxY = 0;
+  for (const v of alive) {
+    const x = invX(v), y = invY(v);
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x + INV[v.t].w); maxY = Math.max(maxY, y + 8);
+    eraseRect(x, y, INV[v.t].w, 8);
+  }
+  if ((w.dir > 0 && maxX + 2 > W - 6) || (w.dir < 0 && minX - 2 < 6)) w.dropNext = true;
+  if (maxY >= CANNON_Y) {   // invasion : fin de partie
+    for (const c of w.cannons) if (c.st === 'ok') boomCannon(c);
+    w.invaded = true;
+  }
+}
+function boomCannon(c) { c.st = 'boom'; c.t = 1.3; c.bul = null; A.noise(1, .25, 900, -700); }
+function updCannon(c, dt) {
+  const inp = A.input(c.pid);
+  if (c.st === 'boom') {
+    if ((c.t -= dt) <= 0) {
+      if (w.invaded) { A.gameOver(); c.st = 'out'; return; }
+      c.st = A.die(c.pid) ? 'wait' : 'out'; c.t = 1;
+    }
+    return;
+  }
+  if (c.st === 'wait') { if ((c.t -= dt) <= 0) { c.st = 'ok'; c.x = c.home; } return; }
+  if (c.st !== 'ok') return;
+  if (w.clearT <= 0) {
+    if (inp.left) c.x -= 64 * dt; if (inp.right) c.x += 64 * dt;
+    c.x = A.clamp(c.x, 14, W - 14);
+    if (inp.aP && !c.bul) { c.bul = { x: Math.round(c.x), y: CANNON_Y - 4 }; c.shots++; A.tone(1200, .12, 'square', .05, -900); }
+  }
+  if (c.bul) updBullet(c, dt);
+}
+function updBullet(c, dt) {
+  const b = c.bul, steps = 4, dy = 330 * dt / steps;
+  for (let i = 0; i < steps; i++) {
+    b.y -= dy;
+    if (b.y < 26) { w.expl.push({ x: b.x - 4, y: 24, t: .2, small: true }); c.bul = null; return; }
+    const s = shieldAt(b.x, b.y);
+    if (s) { splat(s, b.x, b.y, 3); c.bul = null; return; }
+    for (const v of w.inv) {
+      if (!v.alive) continue;
+      const x = invX(v), y = invY(v);
+      if (b.x >= x && b.x <= x + INV[v.t].w && b.y >= y && b.y <= y + 8) {
+        v.alive = false; A.addScore(c.pid, INV[v.t].pts); c.bul = null;
+        w.expl.push({ x: x + INV[v.t].w / 2 - 6, y, t: .25 }); A.noise(.15, .15, 3000, -2500); return;
+      }
+    }
+    if (w.ufo && b.x >= w.ufo.x && b.x <= w.ufo.x + 16 && b.y >= UFO_Y && b.y <= UFO_Y + 7) {
+      const pts = A.pick([50, 100, 150, 300]); A.addScore(c.pid, pts);
+      w.pops.push({ x: w.ufo.x + 8, y: UFO_Y, s: pts, t: 1.5 }); A.burst(w.parts, w.ufo.x + 8, UFO_Y + 3, ['#ff3030', '#fff'], 20, 50);
+      A.noise(.6, .2, 2000, -1800); w.ufo = null; w.ufoT = A.rand(20, 30); c.bul = null; return;
+    }
+    for (const e of w.ebul) if (Math.abs(e.x - b.x) < 3 && Math.abs(e.y - b.y) < 6 && Math.random() < .5) {
+      e.dead = true; c.bul = null; w.expl.push({ x: b.x - 4, y: b.y - 4, t: .15, small: true }); return;
+    }
+  }
+}
+function updEnemyBullets(dt) {
+  const sp = 95 + Math.min(w.wave, 8) * 6;
+  for (const e of w.ebul) {
+    if (e.dead) continue;
+    for (let i = 0; i < 3 && !e.dead; i++) {
+      e.y += sp * dt / 3;
+      const s = shieldAt(e.x, e.y + 6);
+      if (s) { splat(s, e.x, e.y + 6, 3); e.dead = true; break; }
+      for (const c of w.cannons) if (c.st === 'ok' && Math.abs(e.x - c.x) < 7 && e.y + 7 >= CANNON_Y && e.y < CANNON_Y + 8) { boomCannon(c); e.dead = true; break; }
+      if (e.y + 7 >= GROUND) { e.dead = true; w.expl.push({ x: e.x - 4, y: GROUND - 8, t: .2, small: true }); }
+    }
+  }
+  w.ebul = w.ebul.filter(e => !e.dead);
+}
+function updUfo(dt, alive) {
+  if (w.ufo) {
+    w.ufo.x += w.ufo.dir * 40 * dt;
+    A.hum('ufo', 600 + Math.sin(w.t * 40) * 150, 'square', .03);
+    if (w.ufo.x < -20 || w.ufo.x > W + 4) { w.ufo = null; w.ufoT = A.rand(20, 30); }
+  } else if ((w.ufoT -= dt) <= 0 && alive >= 8 && w.clearT <= 0) {
+    const d = Math.random() < .5 ? 1 : -1; w.ufo = { dir: d, x: d > 0 ? -16 : W };
+  }
+}
+
+// ---------- Rendu ----------
+const BOLT = [S('.X.|X..|.X.|..X|.X.|X..|.X.'), S('.X.|.X.|.X.|XXX|.X.|.X.|.X.'), S('X..|.X.|..X|.X.|X..|.X.|..X')].map(a => A.sprite(a, X));
+function draw() {
+  const ctx = A.ctx;
+  if (w.ufo) A.draw(UFO, w.ufo.x, UFO_Y);
+  for (const v of w.inv) if (v.alive) A.draw(INV[v.t].f[w.frame], invX(v), invY(v));
+  for (const e of w.expl) A.draw(BOOM, e.x, e.y);
+  for (const s of w.shields) A.draw(s.c, s.x, s.y);
+  for (const e of w.ebul) A.draw(BOLT[e.k], e.x - 1, e.y);
+  for (const c of w.cannons) {
+    if (c.st === 'ok') A.draw(CANNON[c.pid], c.x - 6, CANNON_Y);
+    else if (c.st === 'boom') A.draw(CBOOMS[c.pid][Math.floor(w.t * 10) % 2], c.x - 6, CANNON_Y + 2);
+    if (c.bul) { ctx.fillStyle = '#fff'; ctx.fillRect(c.bul.x, Math.round(c.bul.y), 1, 4); }
+  }
+  A.drawParts(w.parts);
+  for (const p of w.pops) A.text(p.s, p.x, UFO_Y, '#ff3030', 1, 'center');
+  ctx.fillStyle = GREEN; ctx.fillRect(0, GROUND, W, 1);
+  A.players.forEach((p, i) => {
+    const x = i ? W - 20 : 6;
+    A.text(Math.max(0, p.lives), x + (i ? 8 : 0), GROUND + 6, '#fff');
+    for (let k = 0; k < Math.min(p.lives - 1, 3); k++) A.draw(CANNON[i], i ? x - 16 - k * 16 : x + 12 + k * 16, GROUND + 5);
+  });
+  A.text('VAGUE ' + w.wave, W / 2, GROUND + 6, '#888', 1, 'center');
+  if (w.clearT > 0) A.text('VAGUE SUIVANTE', W / 2, 150, '#fff', 1, 'center');
+}
+function attract(ctx, t, y) {
+  A.text('*TABLEAU DES POINTS*', W / 2, y + 10, '#fff', 1, 'center');
+  const rows = [[UFO, '= ? MYSTERE', '#ff3030'], [INV[0].f[0], '= 30 POINTS'], [INV[1].f[0], '= 20 POINTS'], [INV[2].f[0], '= 10 POINTS', GREEN]];
+  rows.forEach(([s, txt, c], i) => { A.drawC(s, 76, y + 34 + i * 16); A.text(txt, 92, y + 31 + i * 16, c || '#fff'); });
+}
+A.run({
+  id: 'envahisseurs', title: 'ENVAHISSEURS', sub: "- DE L'ESPACE -", lives: 3, bonus: 1500,
+  logoColors: ['#ffffff','#d0ffd0','#a0ffa0','#60ff60','#30e030','#20b020','#108010','#043004'],
+  help: () => ['J1: FLECHES + ESPACE (TIR)', 'J2: ' + A.lab('KeyD') + '/' + A.lab('KeyG') + ' + ' + A.lab('KeyA') + ' (TIR)'],
+  init, update, draw, attract
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>Phenix</title></head>
+<body>
+<script src="../commun/arcade.js"></script>
+<script>
+'use strict';
+// ============================================================
+//  PHÉNIX — dans l'esprit de Phoenix (1980)
+//  Vagues 1-2 : petits oiseaux. Vagues 3-4 : grands phénix dont
+//  on arrache les ailes. Vague 5 : vaisseau-mère (perce la coque
+//  et le tapis roulant pour toucher le pilote). Bouclier : bouton 2.
+// ============================================================
+const A = Arcade, W = 224, H = 288, SHIP_Y = 250;
+const S = s => s.split('|');
+const BIRD = [S('W.........W|WW.......WW|.WW.YRY.WW.|..WWYYYWW..|....YYY....|....Y.Y....|...........|...........'),
+              S('...........|...........|WWWWYRYWWWW|.WWWYYYWWW.|....YYY....|....Y.Y....|...........|...........'),
+              S('...........|...........|....YRY....|...WYYYW...|..WWYYYWW..|.WW.Y.Y.WW.|WW.......WW|W.........W')];
+const BIRDS = [BIRD.map(b => A.sprite(b, { W: '#40c0ff', Y: '#ff60c0', R: '#ffe030' })),
+               BIRD.map(b => A.sprite(b, { W: '#ff9020', Y: '#ff3030', R: '#ffffff' }))];
+const SHIP_ART = S('......R......|.....RRR.....|.....RWR.....|..Y..RWR..Y..|..Y.RRWRR.Y..|.YYRRRRRRRYY.|YYRRRBBBRRRYY|YRRRBBBBBRRRY|YR.RRRRRRR.RY|Y...RR.RR...Y');
+const SHIPS = [A.sprite(SHIP_ART, { R: '#c040ff', Y: '#ffe030', W: '#fff', B: '#40c0ff' }), A.sprite(SHIP_ART, { R: '#30d050', Y: '#ffe030', W: '#fff', B: '#ff60c0' })];
+const PILOT = A.sprite(S('..G...G..|...G.G...|.GGGGGGG.|GG.GGG.GG|GGGGGGGGG|.G.G.G.G.|G.......G'), { G: '#60ff60' });
+const WINGH = [9, 9, 8, 8, 7, 6, 5, 4];
+
+let w;
+// Difficulté progressive : 0 à la vague 1, 1 (maximum) à partir de la vague 13
+const D = () => Math.min(1, (w.stage - 1) / 12);
+function init(n) {
+  w = { t: 0, stage: 0, stars: A.starfield(60, 25, 18), ships: [], parts: [], pops: [] };
+  for (let i = 0; i < n; i++) w.ships.push({ pid: i, home: n === 1 ? 112 : (i ? 150 : 74), st: 'ok', t: 0, mis: [], shield: 0, cool: 0 });
+  w.ships.forEach(s => s.x = s.home);
+  nextStage();
+  return w;
+}
+function nextStage() {
+  w.stage++; w.birds = []; w.big = []; w.ms = null; w.bul = []; w.phase = 'intro'; w.timer = 2;
+  const kind = (w.stage - 1) % 5, lvl = Math.floor((w.stage - 1) / 5);
+  w.kind = kind; w.lvl = lvl;
+  if (kind < 2) {
+    for (let r = 0; r < (w.stage <= 2 ? 3 : 4); r++) for (let c = 0; c < 8 - (r % 2); c++) {
+      const hx = 34 + c * 22 + (r % 2) * 11, hy = 44 + r * 18;
+      w.birds.push({ hx, hy, x: hx, y: hy, st: 'form', t: A.rand(0, 3), fl: Math.random() * 3, vx: 0, vy: 0, fireT: A.rand(1, 4) });
+    }
+  } else if (kind < 4) {
+    for (let k = 0; k < 8; k++) w.big.push({ hx: 40 + (k % 4) * 48, hy: 50 + Math.floor(k / 4) * 40, x: 0, y: 0, ph: k * .7, L: Array(8).fill(1), R: Array(8).fill(1), regT: 0, st: 'form', fireT: A.rand(1, 3), t: 0 });
+    w.big.forEach(b => { b.x = b.hx; b.y = b.hy; });
+  } else {
+    w.ms = { x: 112, y: 22, hull: [0, 1, 2, 3].map(r => Array.from({ length: 40 }, (_, c) => c >= r * 2 && c < 40 - r * 2)), belt: Array(40).fill(true), off: 0, alive: true, fireT: 1 };
+    for (let k = 0; k < 4; k++) w.birds.push({ hx: 40 + k * 48, hy: 150, x: 40 + k * 48, y: 150, st: 'fly', t: 0, fl: k, vx: 0, vy: 0, fireT: A.rand(1, 4), tx: 112, ty: 160, rt: 0, keep: true });
+  }
+}
+
+function update(_, dt) {
+  w.t += dt; w.stars.update(dt); A.updParts(w.parts, dt);
+  w.pops.forEach(p => p.t -= dt); w.pops = w.pops.filter(p => p.t > 0);
+  for (const s of w.ships) updShip(s, dt);
+  if (w.phase === 'intro') { if ((w.timer -= dt) <= 0) w.phase = 'play'; return; }
+  if (w.phase === 'clear') { if ((w.timer -= dt) <= 0) nextStage(); return; }
+  const ok = w.ships.filter(s => s.st === 'ok');
+  for (const b of w.birds) updBird(b, dt, ok);
+  for (const b of w.big) updBig(b, dt, ok);
+  if (w.ms) updMother(dt, ok);
+  w.birds = w.birds.filter(b => !b.dead); w.big = w.big.filter(b => !b.dead);
+  for (const b of w.bul) {
+    b.x += b.vx * dt; b.y += b.vy * dt; if (b.y > H) b.dead = true;
+    for (const s of w.ships) if (s.st === 'ok' && Math.abs(b.x - s.x) < 6 && b.y > SHIP_Y && b.y < SHIP_Y + 10) { b.dead = true; if (!s.shield) boom(s); }
+  }
+  w.bul = w.bul.filter(b => !b.dead);
+  if (!w.birds.length && !w.big.length && (!w.ms || !w.ms.alive)) { w.phase = 'clear'; w.timer = w.ms ? 3 : 1.5; }
+}
+function enemyShot(x, y, ok) {
+  if (w.bul.length >= 2 + Math.floor(D() * 4)) return;     // peu de tirs à l'écran au début
+  const t = ok.length ? A.pick(ok) : null;
+  w.bul.push({ x, y, vx: t ? A.clamp((t.x - x) * .25, -30, 30) : 0, vy: 70 + D() * 70 });
+}
+function updBird(b, dt, ok) {
+  b.t += dt; b.fl += dt * (b.st === 'form' ? 4 : 10);
+  const aggr = w.kind === 1 ? 1 + D() * .5 : 1, vmax = (45 + D() * 50) * aggr;
+  if (b.st === 'form') {
+    b.x = b.hx + Math.sin(w.t * .9) * 12; b.y = b.hy + Math.sin(w.t * 2 + b.hx) * 2;
+    const flying = w.birds.filter(o => o.st === 'fly').length;
+    if (ok.length && flying < Math.min(6, 1 + Math.floor(w.stage / 2)) && Math.random() < dt * (.05 + D() * .12) * aggr) { b.st = 'fly'; b.t = 0; b.rt = 0; b.vy = -30; }
+  } else {
+    if ((b.rt -= dt) <= 0) { b.rt = A.rand(.7, 1.5); const t = ok.length ? A.pick(ok) : { x: 112 }; b.tx = A.clamp(t.x + A.rand(-60, 60), 10, W - 10); b.ty = A.rand(70, 200 + D() * 25); }
+    const back = !b.keep && b.t > 7;
+    const tx = back ? b.hx : b.tx, ty = back ? b.hy : b.ty, steer = 1.5 + D() * 1.5;
+    b.vx = A.clamp(b.vx + (tx - b.x) * steer * dt, -vmax, vmax); b.vy = A.clamp(b.vy + (ty - b.y) * steer * dt, -vmax, vmax);
+    b.x += b.vx * dt; b.y += b.vy * dt;
+    if (back && Math.hypot(b.x - b.hx, b.y - b.hy) < 6) b.st = 'form';
+    if ((b.fireT -= dt) <= 0) { b.fireT = A.rand(2.5, 4.5) * (1 - D() * .55) / aggr; if (b.y < 200) enemyShot(b.x, b.y + 4, ok); }
+    for (const s of w.ships) if (s.st === 'ok' && Math.abs(b.x - s.x) < 9 && Math.abs(b.y - SHIP_Y - 5) < 8) { if (!s.shield) boom(s); killBird(b, s.pid); }
+  }
+}
+function killBird(b, pid) {
+  b.dead = true; const pts = b.st === 'form' ? 20 : A.pick([50, 80, 100]);
+  A.addScore(pid, pts); A.burst(w.parts, b.x, b.y, ['#40c0ff', '#ff60c0', '#ffe030', '#fff'], 14, 50); A.noise(.25, .15, 2800, -2400);
+}
+function updBig(b, dt, ok) {
+  b.t += dt; b.ph += dt * 5;
+  if ((b.regT += dt) > 4 - D() * 1.5) { b.regT = 0; for (const side of [b.L, b.R]) { const k = side.indexOf(0); if (k >= 0) side[k] = 1; } }
+  if (b.st === 'form') {
+    b.x = b.hx + Math.sin(w.t * .7 + b.hx) * 18; b.y = b.hy + Math.sin(w.t * 1.3 + b.hx) * 8;
+    const swooping = w.big.filter(o => o.st === 'swoop').length;
+    if (ok.length && swooping < 1 + Math.floor(D() * 3) && Math.random() < dt * (.05 + D() * .1)) { b.st = 'swoop'; b.t = 0; b.sx = b.x; b.tg = A.pick(ok).x; }
+  } else {
+    const k = b.t / (4.5 - D() * 1.3);
+    b.x = A.clamp(b.sx + (b.tg - b.sx) * Math.sin(Math.min(k, 1) * Math.PI / 2) + Math.sin(b.t * 3) * 20, 22, W - 22);
+    b.y = b.hy + Math.sin(Math.min(k, 1) * Math.PI) * 150;
+    if (k >= 1) b.st = 'form';
+    for (const s of w.ships) if (s.st === 'ok' && Math.abs(b.x - s.x) < 14 && Math.abs(b.y - SHIP_Y - 5) < 10) { if (!s.shield) boom(s); else killBig(b, s.pid); }
+  }
+  if ((b.fireT -= dt) <= 0) { b.fireT = A.rand(2.5, 4) * (1 - D() * .5); enemyShot(b.x, b.y + 6, ok); }
+}
+const flap = (b, k) => Math.round(Math.sin(b.ph) * k * .9);
+function hitBig(b, x, y, pid) {
+  const dx = x - b.x;
+  if (Math.abs(dx) < 5 && y > b.y - 6 && y < b.y + 8) { killBig(b, pid); return true; }
+  const k = Math.floor((Math.abs(dx) - 5) / 2), side = dx < 0 ? b.L : b.R;
+  if (k < 0 || k > 7 || !side[k]) return false;
+  const top = b.y - 4 + flap(b, k);
+  if (y < top || y > top + WINGH[k]) return false;
+  side[k] = 0; if (k < 7) side[k + 1] = 0; b.regT = 0; A.tone(900, .05, 'square', .05); return true;
+}
+function killBig(b, pid) {
+  b.dead = true; const pts = b.st === 'form' ? A.pick([50, 100]) : A.pick([200, 500, 800]);
+  A.addScore(pid, pts); w.pops.push({ x: b.x, y: b.y, s: pts, t: 1.2 });
+  A.burst(w.parts, b.x, b.y, ['#ff60c0', '#40c0ff', '#ffe030', '#fff'], 30, 70); A.noise(.5, .2, 2000, -1800);
+}
+function updMother(dt, ok) {
+  const m = w.ms; if (!m.alive) return;
+  m.y = Math.min(130, m.y + (1 + D() * 1.5) * dt); m.off = (m.off + dt * 20) % 4;
+  if (m.off < dt * 20) m.belt.unshift(m.belt.pop());
+  if ((m.fireT -= dt) <= 0) { m.fireT = A.rand(1.2, 2) * (1 - D() * .5); enemyShot(m.x + A.rand(-60, 60), m.y + 48, ok); }
+  if (w.birds.length < 1 + Math.round(D() * 2) && Math.random() < dt * .2) w.birds.push({ hx: m.x, hy: m.y + 50, x: m.x, y: m.y + 50, st: 'fly', t: 0, fl: 0, vx: 0, vy: 0, fireT: 2, rt: 0, keep: true });
+}
+// Un tir monte dans le vaisseau-mère : coque (4 rangées) puis tapis, puis pilote
+function hitMother(x, y, pid) {
+  const m = w.ms; if (!m || !m.alive) return false;
+  const left = m.x - 80, c = Math.floor((x - left) / 4);
+  if (c < 0 || c >= 40) return false;
+  for (let r = 3; r >= 0; r--) { const ry = m.y + 30 + r * 4; if (y >= ry && y < ry + 4 && m.hull[r][c]) { m.hull[r][c] = false; A.addScore(pid, 10); A.tone(700, .04, 'square', .04); return true; } }
+  if (y >= m.y + 26 && y < m.y + 30 && m.belt[c]) { m.belt[c] = false; A.tone(500, .04, 'square', .04); return true; }
+  if (y < m.y + 26 && y > m.y + 6) {
+    if (Math.abs(x - m.x) < 5) {
+      m.alive = false; const pts = A.pick([1000, 2000, 4000, 9000]); A.addScore(pid, pts);
+      w.pops.push({ x: m.x, y: m.y + 10, s: pts, t: 3 });
+      for (let k = 0; k < 6; k++) A.burst(w.parts, m.x + A.rand(-70, 70), m.y + A.rand(0, 40), ['#c040ff', '#ffe030', '#ff3030', '#fff', '#40c0ff'], 25, 80, 1.5);
+      A.noise(2, .35, 1500, -1300); w.birds.forEach(b => b.dead = true); return true;
+    }
+    return y < m.y + 26 && Math.abs(x - m.x) < 70;
+  }
+  return false;
+}
+function boom(s) { s.st = 'boom'; s.t = 1.4; s.mis = []; A.burst(w.parts, s.x, SHIP_Y + 5, ['#fff', '#c040ff', '#ffe030'], 40, 70, 1.2); A.noise(1.2, .3, 1200, -1000); }
+function updShip(s, dt) {
+  for (const m of s.mis) {
+    for (let k = 0; k < 3 && !m.dead; k++) {
+      m.y -= 330 * dt / 3; if (m.y < 18) { m.dead = true; break; }
+      for (const b of w.birds) if (!b.dead && Math.abs(b.x - m.x) < 6 && Math.abs(b.y - m.y) < 5) { killBird(b, s.pid); m.dead = true; break; }
+      if (m.dead) break;
+      for (const b of w.big) if (!b.dead && hitBig(b, m.x, m.y, s.pid)) { m.dead = true; break; }
+      if (!m.dead && hitMother(m.x, m.y, s.pid)) m.dead = true;
+    }
+  }
+  s.mis = s.mis.filter(m => !m.dead);
+  if (s.st === 'boom') { if ((s.t -= dt) <= 0) { s.st = A.die(s.pid) ? 'wait' : 'out'; s.t = 1.5; } return; }
+  if (s.st === 'wait') { if ((s.t -= dt) <= 0) { s.st = 'ok'; s.x = s.home; s.cool = 0; } return; }
+  if (s.st !== 'ok') return;
+  const i = A.input(s.pid);
+  s.shield = Math.max(0, s.shield - dt); s.cool = Math.max(0, s.cool - dt);
+  if (i.bP && !s.cool) { s.shield = 1.3; s.cool = 5; A.tone(200, 1.2, 'sawtooth', .05, 400); }
+  if (!s.shield) s.x = A.clamp(s.x + ((i.right ? 1 : 0) - (i.left ? 1 : 0)) * 95 * dt, 8, W - 8);
+  if (i.aP && s.mis.length < 2 && !s.shield) { s.mis.push({ x: Math.round(s.x), y: SHIP_Y - 2 }); A.tone(1800, .1, 'sawtooth', .04, -1500); }
+}
+
+function drawBig(b) {
+  const ctx = A.ctx, x = Math.round(b.x), y = Math.round(b.y);
+  for (const [side, dir] of [[b.L, -1], [b.R, 1]]) for (let k = 0; k < 8; k++) {
+    if (!side[k]) continue;
+    const cx = dir < 0 ? x - 7 - k * 2 : x + 5 + k * 2, top = y - 4 + flap(b, k);
+    ctx.fillStyle = k < 3 ? '#ff60c0' : k < 6 ? '#40c0ff' : '#ffe030'; ctx.fillRect(cx, top, 2, WINGH[k]);
+  }
+  ctx.fillStyle = '#ff3030'; ctx.fillRect(x - 4, y - 6, 8, 12); ctx.fillStyle = '#ffe030'; ctx.fillRect(x - 3, y - 4, 2, 2); ctx.fillRect(x + 1, y - 4, 2, 2);
+  ctx.fillStyle = '#ff9020'; ctx.fillRect(x - 1, y + 6, 2, 3); ctx.fillRect(x - 3, y + 8, 2, 2); ctx.fillRect(x + 1, y + 8, 2, 2);
+}
+function drawMother() {
+  const m = w.ms, ctx = A.ctx, left = Math.round(m.x - 80), y = Math.round(m.y);
+  if (!m.alive) return;
+  ctx.fillStyle = '#8040c0'; ctx.fillRect(left + 20, y + 4, 120, 22); ctx.fillRect(left + 40, y, 80, 4);
+  ctx.fillStyle = '#c080ff'; ctx.fillRect(left + 20, y + 4, 120, 1);
+  for (let k = 0; k < 8; k++) { ctx.fillStyle = Math.floor(w.t * 4 + k) % 3 ? '#ffe030' : '#ff3030'; ctx.fillRect(left + 26 + k * 15, y + 8, 4, 2); }
+  ctx.fillStyle = '#000'; ctx.fillRect(m.x - 8, y + 10, 16, 16);
+  A.drawC(PILOT, m.x, y + 18);
+  m.belt.forEach((on, c) => { if (on) { ctx.fillStyle = c % 2 ? '#ff9020' : '#c06010'; ctx.fillRect(left + c * 4, y + 26, 4, 4); } });
+  m.hull.forEach((row, r) => row.forEach((on, c) => { if (on) { ctx.fillStyle = (r + c) % 2 ? '#c040ff' : '#9020d0'; ctx.fillRect(left + c * 4, y + 30 + r * 4, 4, 4); } }));
+}
+function draw() {
+  const ctx = A.ctx;
+  w.stars.draw(w.t);
+  if (w.ms) drawMother();
+  const pal = BIRDS[w.kind === 1 ? 1 : 0];
+  for (const b of w.birds) A.drawC(pal[[0, 1, 2, 1][Math.floor(b.fl) % 4]], b.x, b.y);
+  for (const b of w.big) drawBig(b);
+  ctx.fillStyle = '#ffffff'; for (const b of w.bul) ctx.fillRect(Math.round(b.x), Math.round(b.y), 1, 3);
+  for (const s of w.ships) {
+    if (s.st === 'ok') {
+      A.draw(SHIPS[s.pid], s.x - 6, SHIP_Y);
+      if (s.shield) { ctx.strokeStyle = Math.floor(w.t * 12) % 2 ? '#40c0ff' : '#ffffff'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(s.x, SHIP_Y + 5, 11, 0, Math.PI * 2); ctx.stroke(); }
+    }
+    ctx.fillStyle = '#ffe030'; for (const m of s.mis) ctx.fillRect(m.x, Math.round(m.y), 1, 6);
+  }
+  A.drawParts(w.parts, 2);
+  for (const p of w.pops) A.text(p.s, p.x, p.y, '#ffe030', 1, 'center');
+  A.players.forEach((p, i) => {
+    for (let k = 0; k < Math.min(p.lives - 1, 4); k++) A.draw(SHIPS[i], i ? W - 17 - k * 14 : 4 + k * 14, H - 12);
+    const s = w.ships[i]; if (s && s.st === 'ok') { ctx.fillStyle = s.cool ? '#604080' : '#40c0ff'; ctx.fillRect(Math.round(s.x - 6), SHIP_Y + 12, Math.round(13 * (1 - s.cool / 5)), 1); }
+  });
+  if (w.phase === 'intro') A.text(['VAGUE ' + w.stage, 'VAGUE ' + w.stage, 'LES PHENIX !', 'LES PHENIX !', 'LE VAISSEAU-MERE !'][w.kind], W / 2, 150, '#ffe030', 1, 'center');
+}
+function attract(ctx, t, y) {
+  const fake = { L: Array(8).fill(1), R: Array(8).fill(1), x: W / 2, y: y + 22, ph: t * 5 };
+  drawBig(fake);
+  for (let k = 0; k < 5; k++) A.drawC(BIRDS[0][[0, 1, 2, 1][Math.floor(t * 8 + k) % 4]], 40 + k * 36, y + 50 + Math.sin(t * 2 + k) * 4);
+  A.text('ARRACHE LES AILES, VISE LE CORPS', W / 2, y + 68, '#fff', 1, 'center');
+  A.text('BOUTON 2 = BOUCLIER', W / 2, y + 80, '#40c0ff', 1, 'center');
+}
+A.run({
+  id: 'phenix', title: 'PHENIX', sub: '- LA REVANCHE DES OISEAUX -', lives: 3, bonus: 5000, bonusEvery: 20000,
+  logoColors: ['#fff0f8','#ffc0e0','#ff90c8','#ff60b0','#ff3090','#e02070','#a01050','#300418'],
+  help: () => ['J1: FLECHES, ESPACE=TIR, ALT=BOUCLIER', 'J2: ' + A.lab('KeyD') + '/' + A.lab('KeyG') + ', ' + A.lab('KeyA') + '=TIR, ' + A.lab('KeyS') + '=BOUCLIER'],
+  init, update, draw, attract
+});
+</script>
+</body>
+</html>

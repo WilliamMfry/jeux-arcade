@@ -1,0 +1,67 @@
+JEUX D'ARCADE SERGE
+===================
+
+Pour jouer : ouvrir le fichier index.html d'un dossier (double-clic, il s'ouvre
+dans Chrome / Edge). Aucune installation, aucun Internet nécessaire.
+Le dossier "commun" contient le moteur partagé : il doit rester à côté des jeux.
+
+  casse-brique          Casse-brique (Arkanoid)        souris
+  01-envahisseurs       Space Invaders
+  02-glouton            Pac-Man
+  03-gorille            Donkey Kong
+  04-galaxiens          Galaxian
+  05-essaim             Galaga
+  06-phenix             Phoenix
+  07-asteroides         Asteroids (graphismes vectoriels)
+  08-grenouille         Frogger
+  09-mille-pattes       Centipede                      souris = trackball
+  10-alerte-missiles    Missile Command                souris = trackball
+  11-poing-de-fer       Tekken (combat en 3D)          4 boutons d'attaque
+
+POING DE FER (commandes à part : 4 boutons comme Tekken)
+  Joueur 1 .............. Z Q S D pour bouger, U = poing gauche, I = poing droit,
+                          J = pied gauche, K = pied droit
+  Joueur 2 .............. flèches + pavé numérique 4 5 1 2 (ou O P L M)
+  Manette ............... Carré / Triangle = poings, Croix / Rond = pieds
+  Échap / Select ........ pause      2 en pleine partie solo : un nouveau challenger !
+  Garde : tenir ARRIERE (debout = coups hauts et moyens, accroupi = coups bas)
+  Pas de côté : taper HAUT ou BAS     Saut : tenir HAUT     Ruée : AVANT, AVANT
+  Coups communs : avant+poing droit = uppercut qui envoie en l'air (jongle !),
+    bas+pied droit = balayage, poing gauche+pied gauche = chope (poing pour se dégager),
+    poing gauche, poing droit, pied droit = enchaînement
+  Pas chassé continu : taper HAUT (ou BAS) puis le maintenir
+  Course : AVANT, AVANT et maintenir AVANT -> charge à l'épaule au contact
+  Au sol : HAUT = se relever, ARRIERE = roulade arrière, BAS = roulade de côté,
+    pied = coup de pied en se relevant. Appuyer sur un bouton juste avant de
+    toucher le sol = roulade de récupération (UKEMI)
+  Murs : un adversaire projeté contre le mur y reste collé (combo possible !)
+  RAGE (vie sous 25 %, barre rouge) : +10 % de dégâts et une fois par round
+    RAGE ART = bas-avant + poing gauche + poing droit (encaisse les coups)
+  Spéciaux : KENJI  avant, bas, bas-avant + poing droit  (Poing éclair)
+             LINA   pied droit x3                         (Triple fouet)
+             BRUNO  poing gauche + poing droit            (Marteau)
+             ZHAO   poing gauche x2 + poing droit, bas-avant + poing gauche,
+                    avant, avant + pied droit             (Envol du tigre)
+
+COMMANDES (jeux 01 à 10, calquées sur les touches par défaut de MAME)
+  1 / Entrée ............ partie 1 joueur
+  2 ..................... partie 2 joueurs (en même temps à l'écran)
+  Joueur 1 .............. flèches + Espace (ou Ctrl) = bouton 1, Alt (ou Maj) = bouton 2
+  Joueur 2 .............. R F D G (haut bas gauche droite) + Q = bouton 1, S = bouton 2
+  P ..................... pause      Échap : pause puis quitter la partie
+  F ..................... plein écran
+  V ..................... mode d'affichage : ADAPTE (le plus grand possible sans
+                          déformer) / PLEIN ECRAN (étiré) / PIXELS NETS (x2, x3...)
+  O ..................... rotation 90° pour un écran de borne monté à la verticale
+  M ..................... couper / remettre le son
+  C ..................... effet écran cathodique (sur l'écran titre)
+  Manettes USB .......... reconnues automatiquement (manette 1 = J1, manette 2 = J2)
+                          Start = jouer / pause, Select (en pause) = quitter,
+                          Select + Start = quitter la partie
+Les jeux suivent la taille de la fenêtre en permanence (redimensionnement,
+plein écran). Les réglages V / O / C / M sont mémorisés.
+Dans le casse-brique, les mêmes réglages sont aussi dans le menu OPTIONS.
+
+Adaptation à Recalbox : voir RECALBOX.txt
+
+Les meilleurs scores (top 10 par jeu) sont sauvegardés dans le navigateur.

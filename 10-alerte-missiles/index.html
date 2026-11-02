@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>Alerte Missiles</title></head>
+<body>
+<script src="../commun/arcade.js"></script>
+<script>
+'use strict';
+// ============================================================
+//  ALERTE MISSILES — dans l'esprit de Missile Command (1980)
+//  Défends 6 villes avec 3 bases de missiles. J1 vise à la souris
+//  (comme le trackball), J2 au clavier ; chacun tire depuis la
+//  base la plus proche de sa cible.
+// ============================================================
+const A = Arcade, W = 320, H = 240, GROUND = 222;
+const BASES = [24, 160, 296], CITIES = [60, 92, 124, 196, 228, 260];
+const PALS = [
+  { g: '#e0c000', e: '#ff3030', c: '#3060ff', city: '#30c0ff', bg: '#000000' },
+  { g: '#30c030', e: '#ffe030', c: '#ff3030', city: '#ffffff', bg: '#000010' },
+  { g: '#c040ff', e: '#30ff60', c: '#ffe030', city: '#ff8030', bg: '#100008' },
+  { g: '#ff6020', e: '#30e0ff', c: '#ff40ff', city: '#e0e030', bg: '#001008' }
+];
+const XHAIR = ['#ffffff', '#60ff60'];
+
+let w;
+const pal = () => PALS[Math.floor((w.wave - 1) / 2) % PALS.length];
+const mult = () => Math.min(6, Math.ceil(w.wave / 2));
+function init(n) {
+  w = { t: 0, wave: 0, cities: CITIES.map(() => true), bonusCities: 0, nextCity: 10000, cross: [], parts: [] };
+  for (let i = 0; i < n; i++) w.cross.push({ pid: i, x: n === 1 ? 160 : (i ? 220 : 100), y: 120 });
+  nextWave();
+  return w;
+}
+function nextWave() {
+  w.wave++; w.bases = BASES.map(() => ({ ammo: 10, alive: true })); w.enemy = []; w.counter = []; w.expl = []; w.flyers = [];
+  w.toLaunch = 10 + w.wave * 3; w.launchT = 2.5; w.phase = 'intro'; w.timer = 2.5;
+}
+function targets() {
+  const t = [];
+  w.cities.forEach((c, i) => { if (c) t.push(CITIES[i]); });
+  w.bases.forEach((b, i) => { if (b.alive) t.push(BASES[i]); });
+  return t.length ? t : CITIES;
+}
+function launch(x, y, split = true) {
+  const tx = A.pick(targets()) + A.rand(-3, 3), sp = 16 + w.wave * 4.5;
+  const d = Math.hypot(tx - x, GROUND - y);
+  w.enemy.push({ sx: x, sy: y, x, y, vx: (tx - x) / d * sp, vy: (GROUND - y) / d * sp, mirv: split && w.wave > 1 && Math.random() < .2 ? A.rand(80, 140) : 0 });
+}
+function update(_, dt) {
+  w.t += dt; A.updParts(w.parts, dt, 80);
+  for (const c of w.cross) updCross(c, dt);
+  if (w.phase === 'intro') { if ((w.timer -= dt) <= 0) w.phase = 'play'; return; }
+  if (w.phase === 'bonus') { bonusStep(dt); return; }
+  // lancements ennemis par salves
+  if (w.toLaunch > 0 && (w.launchT -= dt) <= 0) {
+    const n = Math.min(w.toLaunch, A.irand(2, 3 + Math.floor(w.wave / 3)));
+    for (let k = 0; k < n; k++) launch(A.rand(10, W - 10), 18);
+    w.toLaunch -= n; w.launchT = Math.max(1.5, 4.5 - w.wave * .3);
+  }
+  if (w.wave > 1 && !w.flyers.length && w.toLaunch > 0 && Math.random() < dt * .08) {
+    const d = Math.random() < .5 ? 1 : -1; w.flyers.push({ x: d > 0 ? -10 : W + 10, y: A.rand(60, 110), vx: d * 30, sat: Math.random() < .5, dropT: 1.5 });
+  }
+  // missiles ennemis
+  for (const m of w.enemy) {
+    m.x += m.vx * dt; m.y += m.vy * dt;
+    if (m.mirv && m.y > m.mirv) { m.dead = true; for (let k = 0; k < A.irand(2, 3); k++) { launch(m.x, m.y, false); w.enemy[w.enemy.length - 1].sx = m.sx; w.enemy[w.enemy.length - 1].sy = m.sy; } continue; }
+    if (m.y >= GROUND - 2) { m.dead = true; impact(m.x); }
+  }
+  for (const f of w.flyers) {
+    f.x += f.vx * dt;
+    if ((f.dropT -= dt) <= 0 && w.toLaunch > 0) { f.dropT = A.rand(1.5, 3); launch(f.x, f.y + 4, false); w.toLaunch--; }
+    if (f.x < -20 || f.x > W + 20) f.dead = true;
+  }
+  // contre-missiles
+  for (const c of w.counter) {
+    const d = Math.hypot(c.tx - c.x, c.ty - c.y), step = c.sp * dt;
+    if (d <= step) { c.dead = true; w.expl.push({ x: c.tx, y: c.ty, t: 0, pid: c.pid }); A.noise(.5, .15, 1800, -1400); }
+    else { c.x += (c.tx - c.x) / d * step; c.y += (c.ty - c.y) / d * step; }
+  }
+  // explosions (dont les réactions en chaîne)
+  for (const e of w.expl) {
+    e.t += dt; e.r = e.t < .55 ? e.t / .55 * 15 : e.t < .85 ? 15 : Math.max(0, 15 * (1 - (e.t - .85) / .5));
+    if (e.enemy) continue;
+    for (const m of w.enemy) if (!m.dead && Math.hypot(m.x - e.x, m.y - e.y) < e.r) {
+      m.dead = true; A.addScore(e.pid, 25 * mult()); w.expl.push({ x: m.x, y: m.y, t: 0, pid: e.pid });
+    }
+    for (const f of w.flyers) if (!f.dead && Math.hypot(f.x - e.x, f.y - e.y) < e.r + 5) {
+      f.dead = true; A.addScore(e.pid, 100 * mult()); w.expl.push({ x: f.x, y: f.y, t: 0, pid: e.pid });
+    }
+  }
+  w.expl = w.expl.filter(e => e.t < 1.35); w.enemy = w.enemy.filter(m => !m.dead); w.counter = w.counter.filter(c => !c.dead); w.flyers = w.flyers.filter(f => !f.dead);
+  if (w.enemy.length) A.hum('alarm', 200 + Math.min(w.enemy.length, 10) * 20 + Math.sin(w.t * 12) * 30, 'square', .012);
+  if (w.toLaunch <= 0 && !w.enemy.length && !w.flyers.length && !w.expl.length && !w.counter.length) startBonus();
+}
+function impact(x) {
+  w.expl.push({ x, y: GROUND - 4, t: 0, enemy: true }); A.noise(.9, .3, 900, -700);
+  CITIES.forEach((cx, i) => { if (w.cities[i] && Math.abs(cx - x) < 12) { w.cities[i] = false; A.burst(w.parts, cx, GROUND, ['#fff', '#ff3030', '#ffe030'], 30, 50, 1); } });
+  BASES.forEach((bx, i) => { if (w.bases[i].alive && Math.abs(bx - x) < 12) { w.bases[i].alive = false; w.bases[i].ammo = 0; } });
+}
+function updCross(c, dt) {
+  if (!A.alive(c.pid)) return;
+  const i = A.input(c.pid);
+  c.x += ((i.right ? 1 : 0) - (i.left ? 1 : 0)) * 170 * dt; c.y += ((i.down ? 1 : 0) - (i.up ? 1 : 0)) * 170 * dt;
+  if (c.pid === 0 && A.mouse.moved) { c.x = A.mouse.x; c.y = A.mouse.y; }
+  c.x = A.clamp(c.x, 4, W - 4); c.y = A.clamp(c.y, 20, GROUND - 16);
+  if (w.phase !== 'play') return;
+  if (i.aP || i.bP || (c.pid === 0 && A.mouse.clicked)) fire(c);
+}
+function fire(c) {
+  const order = [0, 1, 2].filter(k => w.bases[k].alive && w.bases[k].ammo > 0).sort((a, b) => Math.abs(BASES[a] - c.x) - Math.abs(BASES[b] - c.x));
+  if (!order.length) { A.tone(120, .1, 'square', .05); return; }
+  const k = order[0]; w.bases[k].ammo--;
+  w.counter.push({ pid: c.pid, sx: BASES[k], sy: GROUND - 10, x: BASES[k], y: GROUND - 10, tx: c.x, ty: c.y, sp: k === 1 ? 420 : 300 });
+  A.tone(900, .15, 'sawtooth', .04, -600);
+}
+function startBonus() {
+  w.phase = 'bonus'; w.timer = .6; w.bAmmo = w.bases.reduce((s, b) => s + b.ammo, 0); w.bCities = w.cities.filter(Boolean).length; w.bTotal = 0; w.bShownA = 0; w.bShownC = 0;
+}
+function bonusStep(dt) {
+  if ((w.timer -= dt) > 0) return;
+  const share = n => A.players.forEach(p => { if (p.alive) A.addScore(p.id, Math.round(n / A.players.filter(q => q.alive).length)); });
+  if (w.bShownA < w.bAmmo) { w.bShownA++; w.bTotal += 5 * mult(); share(5 * mult()); w.timer = .05; A.tone(1200, .03, 'square', .05); return; }
+  if (w.bShownC < w.bCities) { w.bShownC++; w.bTotal += 100 * mult(); share(100 * mult()); w.timer = .25; A.tone(600, .1, 'square', .06); return; }
+  // villes bonus
+  const best = Math.max(...A.players.map(p => p.score));
+  while (best >= w.nextCity) { w.bonusCities++; w.nextCity += 10000; A.jingle('bonus'); }
+  while (w.bonusCities > 0 && w.cities.some(c => !c)) { w.cities[w.cities.indexOf(false)] = true; w.bonusCities--; }
+  if (!w.cities.some(Boolean)) {
+    if (w.timer > -2.5) return;    // laisse voir la scène avant la fin
+    A.gameOver(); return;
+  }
+  if (w.timer > -1.5) return;
+  nextWave();
+}
+
+// ---------- Rendu ----------
+function line(x0, y0, x1, y1, col) {
+  const ctx = A.ctx; ctx.fillStyle = col;
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1; let err = dx + dy;
+  for (let n = 0; n < 600; n++) { ctx.fillRect(x0, y0, 1, 1); if (x0 === x1 && y0 === y1) break; const e2 = 2 * err; if (e2 >= dy) { err += dy; x0 += sx; } if (e2 <= dx) { err += dx; y0 += sy; } }
+}
+function draw() {
+  const ctx = A.ctx, p = pal();
+  ctx.fillStyle = p.bg; ctx.fillRect(0, 18, W, H - 18);
+  // sol et monticules des bases
+  ctx.fillStyle = p.g; ctx.fillRect(0, GROUND, W, H - GROUND);
+  for (const bx of BASES) for (let k = 0; k < 10; k++) ctx.fillRect(bx - 18 + k, GROUND - k, 36 - k * 2, 1);
+  // villes
+  CITIES.forEach((cx, i) => {
+    if (!w.cities[i]) { ctx.fillStyle = '#602000'; ctx.fillRect(cx - 7, GROUND - 2, 14, 2); return; }
+    ctx.fillStyle = p.city; [[-7, 4], [-5, 7], [-2, 5], [0, 9], [3, 6], [5, 8]].forEach(([dx, hh]) => ctx.fillRect(cx + dx, GROUND - hh, 2, hh));
+    ctx.fillStyle = '#ffe030'; ctx.fillRect(cx - 1, GROUND - 7, 1, 1); ctx.fillRect(cx + 4, GROUND - 4, 1, 1);
+  });
+  // munitions des bases
+  w.bases.forEach((b, i) => {
+    const bx = BASES[i];
+    if (!b.alive) { A.text('X', bx, GROUND - 16, '#ff3030', 1, 'center'); return; }
+    for (let k = 0; k < b.ammo; k++) {
+      const row = k < 1 ? 0 : k < 3 ? 1 : k < 6 ? 2 : 3, idx = [0, 0, 1, 0, 1, 2, 0, 1, 2, 3][k], n = row + 1;
+      ctx.fillStyle = p.c; ctx.fillRect(bx - n * 2 + idx * 4, GROUND - 10 + row * 3, 2, 2);
+    }
+    if (b.ammo <= 3 && w.phase === 'play') A.text(b.ammo ? 'BAS' : 'VIDE', bx, GROUND + 6, '#000', 1, 'center');
+  });
+  for (const m of w.enemy) { line(m.sx, m.sy, m.x, m.y, p.e); ctx.fillStyle = Math.floor(w.t * 20) % 2 ? '#fff' : p.e; ctx.fillRect(Math.round(m.x) - 1, Math.round(m.y) - 1, 2, 2); }
+  for (const f of w.flyers) {
+    const x = Math.round(f.x), y = Math.round(f.y);
+    if (f.sat) { ctx.fillStyle = '#fff'; ctx.fillRect(x - 3, y - 3, 6, 6); ctx.fillStyle = p.e; ctx.fillRect(x - 7, y - 1, 14, 2); }
+    else { ctx.fillStyle = p.e; ctx.fillRect(x - 6, y - 1, 12, 3); ctx.fillRect(x - 2, y - 4, 4, 9); ctx.fillStyle = '#fff'; ctx.fillRect(x + (f.vx > 0 ? 4 : -6), y, 2, 1); }
+  }
+  for (const c of w.counter) {
+    line(c.sx, c.sy, c.x, c.y, p.c);
+    ctx.fillStyle = '#fff'; ctx.fillRect(Math.round(c.x), Math.round(c.y), 1, 1);
+    const tx = Math.round(c.tx), ty = Math.round(c.ty); ctx.fillStyle = XHAIR[c.pid];
+    for (let k = -2; k <= 2; k++) { ctx.fillRect(tx + k, ty + k, 1, 1); ctx.fillRect(tx + k, ty - k, 1, 1); }
+  }
+  const flash = ['#ffffff', '#ffe030', '#ff3030', '#30e0ff', '#ff60ff', '#30ff60'];
+  for (const e of w.expl) { if (e.r <= 0) continue; ctx.fillStyle = flash[Math.floor(w.t * 20 + e.x) % flash.length]; ctx.beginPath(); ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2); ctx.fill(); }
+  A.drawParts(w.parts, 2);
+  for (const c of w.cross) {
+    if (!A.alive(c.pid)) continue;
+    const x = Math.round(c.x), y = Math.round(c.y); ctx.fillStyle = XHAIR[c.pid];
+    ctx.fillRect(x - 5, y, 4, 1); ctx.fillRect(x + 2, y, 4, 1); ctx.fillRect(x, y - 5, 1, 4); ctx.fillRect(x, y + 2, 1, 4);
+  }
+  if (w.phase === 'intro') {
+    A.text('VAGUE ' + w.wave, W / 2, 80, '#fff', 1, 'center');
+    A.text('DEFENDS LES VILLES', W / 2, 96, p.c, 1, 'center');
+    A.text(mult() + ' X POINTS', W / 2, 112, '#ffe030', 1, 'center');
+  }
+  if (w.phase === 'bonus') {
+    A.text('POINTS BONUS', W / 2, 70, p.c, 1, 'center');
+    A.text('MISSILES ' + w.bShownA, W / 2, 90, '#fff', 1, 'center');
+    A.text('VILLES ' + w.bShownC, W / 2, 104, '#fff', 1, 'center');
+    A.text('+' + w.bTotal, W / 2, 122, '#ffe030', 1, 'center');
+    if (!w.cities.some(Boolean)) A.text('LA FIN', W / 2, 150, '#ff3030', 3, 'center');
+  }
+}
+function attract(ctx, t, y) {
+  const x0 = 60, len = 200;
+  for (let k = 0; k < 4; k++) {
+    const sx = x0 + k * 60, p = ((t * .25 + k * .3) % 1);
+    const ex = sx + 20 - k * 10, ey = y + 5 + p * 50;
+    ctx.fillStyle = '#ff3030'; for (let s = 0; s <= 1; s += .02) ctx.fillRect(Math.round(sx + (ex - sx) * s * 1), Math.round(y + 5 + (ey - y - 5) * s), 1, 1);
+  }
+  A.text('MISSILE 25   AVION/SATELLITE 100', W / 2, y + 66, '#fff', 1, 'center');
+  A.text('BONUS : MISSILES RESTANTS ET VILLES', W / 2, y + 78, '#30e0ff', 1, 'center');
+}
+A.run({
+  id: 'alerte-missiles', title: 'ALERTE MISSILES', W, H, lives: 1, mouse: 'abs', scoreScale: 2,
+  logoColors: ['#ffe0e0','#ffb0b0','#ff8080','#ff5050','#ff3030','#d02020','#901010','#300404'],
+  help: () => ['J1: SOURIS + CLIC  (OU FLECHES + ESPACE)', 'J2: ' + ['KeyR', 'KeyF', 'KeyD', 'KeyG'].map(A.lab).join(' ') + ' + ' + A.lab('KeyA') + ' (TIR)'],
+  init, update, draw, attract
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>Essaim Galactique</title></head>
+<body>
+<script src="../commun/arcade.js"></script>
+<script>
+'use strict';
+// ============================================================
+//  ESSAIM GALACTIQUE — dans l'esprit de Galaga (1981)
+//  Arrivées en vagues sur trajectoires courbes, formation qui
+//  "respire", piqués, rayon tracteur du boss (capture), sauvetage
+//  -> double vaisseau, niveaux bonus "défi" sans tirs ennemis.
+// ============================================================
+const A = Arcade, W = 224, H = 288, SHIP_Y = 254;
+const S = s => s.split('|');
+const BUGA = S('....B.B....|.....B.....|..YYYYYYY..|.BYRYYYRYB.|BBYYYYYYYBB|BB.YYYYY.BB|B..BYBYB..B|....BBB....|....B.B....');
+const BUGB = S('....B.B....|.....B.....|..YYYYYYY..|BBYRYYYRYBB|.BYYYYYYYB.|...YYYYY...|..BBYBYBB..|.B..BBB..B.|....B.B....');
+const BOSSA = S('....GG.GG....|...GGGGGGG...|..GYYGGGYYG..|.GGGGGGGGGGG.|GGG.GGGGG.GGG|GG..GBBBG..GG|G...BBBBB...G|G..BB.B.BB..G|....B...B....|...B.....B...|..B.......B..');
+const BOSSB = S('....GG.GG....|...GGGGGGG...|..GYYGGGYYG..|.GGGGGGGGGGG.|.GG.GGGGG.GG.|.G..GBBBG..G.|....BBBBB....|...BB.B.BB...|..B.B...B.B..|..B.......B..|.B.........B.');
+const PALS = {
+  bee: { Y: '#ffe030', B: '#3060ff', R: '#ff3030' },
+  but: { Y: '#ff3030', B: '#f0f0f0', R: '#3060ff' },
+  boss: { G: '#30d050', Y: '#ffe030', B: '#3060ff' },
+  boss2: { G: '#b040ff', Y: '#ffe030', B: '#ff60ff' }
+};
+const SPR = {
+  bee: [A.sprite(BUGA, PALS.bee), A.sprite(BUGB, PALS.bee)],
+  but: [A.sprite(BUGA, PALS.but), A.sprite(BUGB, PALS.but)],
+  boss: [A.sprite(BOSSA, PALS.boss), A.sprite(BOSSB, PALS.boss)],
+  boss2: [A.sprite(BOSSA, PALS.boss2), A.sprite(BOSSB, PALS.boss2)]
+};
+const SHIP_ART = S('.....W.....|.....W.....|....WWW....|....WRW....|.R..WWW..R.|.R.WWWWW.R.|.WWWWBWWWW.|WWWWBBBWWWW|WWW.WWW.WWW|WW..WWW..WW|W....W....W');
+const SHIPS = [A.sprite(SHIP_ART, { W: '#f0f0f0', R: '#ff3030', B: '#3060ff' }), A.sprite(SHIP_ART, { W: '#80ffc0', R: '#ffe030', B: '#3060ff' })];
+const CAPTIVE = A.sprite(SHIP_ART, { W: '#ff4040', R: '#ffe030', B: '#802020' });
+const PTS = { bee: [50, 100], but: [80, 160], boss: [150, 400] };
+
+// ---------- Trajectoires (splines de Catmull-Rom) ----------
+function spline(pts) {
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
+    for (let k = 0; k < 12; k++) {
+      const t = k / 12, t2 = t * t, t3 = t2 * t;
+      out.push([.5 * (2 * p1[0] + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3),
+                .5 * (2 * p1[1] + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)]);
+    }
+  }
+  out.push(pts[pts.length - 1]);
+  const len = [0]; for (let i = 1; i < out.length; i++) len.push(len[i - 1] + Math.hypot(out[i][0] - out[i - 1][0], out[i][1] - out[i - 1][1]));
+  return { p: out, len, total: len[len.length - 1] };
+}
+function posAt(sp, d) {
+  if (d >= sp.total) return sp.p[sp.p.length - 1];
+  let lo = 0, hi = sp.len.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (sp.len[m] <= d) lo = m; else hi = m; }
+  const f = (d - sp.len[lo]) / (sp.len[hi] - sp.len[lo] || 1), a = sp.p[lo], b = sp.p[hi];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+}
+const mir = (pts, side) => side > 0 ? pts : pts.map(([x, y]) => [W - x, y]);
+const PATH_TOP = side => mir([[120, -10], [140, 60], [190, 130], [170, 190], [120, 170], [130, 120], [150, 100]], side);
+const PATH_SIDE = side => mir([[-12, 230], [50, 190], [100, 150], [130, 100], [100, 70], [70, 100], [90, 130]], side);
+const PATH_CHAL = (k, side) => mir([[[120, -10], [100, 100], [40, 200], [120, 240], [200, 150], [150, 60], [260, 40]],
+  [[-12, 200], [80, 160], [180, 200], [150, 260], [80, 200], [120, 80], [120, -30]]][k % 2], side);
+
+// ---------- Monde ----------
+let w;
+function init(n) {
+  w = { t: 0, stage: 0, stars: A.starfield(70, 60, 18), ships: [], parts: [], pops: [], free: [] };
+  for (let i = 0; i < n; i++) w.ships.push({ pid: i, home: n === 1 ? 112 : (i ? 150 : 74), st: 'ok', t: 0, mis: [], dual: false });
+  w.ships.forEach(s => s.x = s.home);
+  nextStage();
+  return w;
+}
+function nextStage() {
+  w.stage++; w.al = []; w.bul = []; w.queue = []; w.t0 = w.t; w.diveT = 4; w.hits = 0; w.capturing = false;
+  w.chal = w.stage % 4 === 3; w.phase = 'intro'; w.timer = 2.5;
+  const add = (kind, r, c, path, delay) => w.queue.push({ kind, r, c, path, delay });
+  if (w.chal) {
+    for (let g = 0; g < 5; g++) for (let k = 0; k < 8; k++)
+      add(k % 2 ? 'but' : 'bee', 0, 0, spline(PATH_CHAL(g, g % 2 ? -1 : 1)), g * 3 + k * .16);
+    return;
+  }
+  const groups = [
+    [...[3, 4, 5, 6].map(c => ['but', 1, c]), ...[3, 4, 5, 6].map(c => ['bee', 3, c])],
+    [...[3, 4, 5, 6].map(c => ['boss', 0, c]), ...[2, 7, 1, 8].map(c => ['but', 1, c])],
+    [...[1, 2, 3, 4, 5, 6, 7, 8].map(c => ['but', 2, c])],
+    [...[1, 2, 7, 8].map(c => ['bee', 3, c]), ...[0, 9].map(c => ['bee', 3, c]), ...[0, 9].map(c => ['bee', 4, c])],
+    [...[1, 2, 3, 4, 5, 6, 7, 8].map(c => ['bee', 4, c])]
+  ];
+  groups.forEach((g, gi) => {
+    const side = gi % 2 ? -1 : 1, path = spline(gi === 1 || gi === 2 ? PATH_SIDE(gi === 1 ? 1 : -1) : PATH_TOP(side));
+    g.forEach(([kind, r, c], k) => add(kind, r, c, path, gi * 2.6 + k * .14));
+  });
+}
+const spread = () => w.al.every(a => a.st !== 'path' && a.st !== 'toslot') && !w.queue.length ? 1 + .09 * (1 - Math.cos(w.t * 1.6)) : 1;
+const slot = a => [112 + (a.c - 4.5) * 16 * spread() + (spread() === 1 ? Math.sin(w.t * .8) * 8 : 0), 40 + a.r * 16];
+
+function update(_, dt) {
+  w.t += dt; w.stars.update(dt, w.phase === 'intro' ? 120 : 60); A.updParts(w.parts, dt);
+  w.pops.forEach(p => p.t -= dt); w.pops = w.pops.filter(p => p.t > 0);
+  for (const s of w.ships) updShip(s, dt);
+  if (w.phase === 'intro') { if ((w.timer -= dt) <= 0) { w.phase = 'play'; w.t0 = w.t; } return; }
+  if (w.phase === 'result') { if ((w.timer -= dt) <= 0) nextStage(); return; }
+  // arrivées
+  const el = w.t - w.t0;
+  while (w.queue.length && w.queue[0].delay <= el) {
+    const q = w.queue.shift();
+    w.al.push({ kind: q.kind, r: q.r, c: q.c, hp: q.kind === 'boss' ? 2 : 1, st: 'path', sp: q.path, d: 0, x: q.path.p[0][0], y: q.path.p[0][1], vx: 0, vy: 1, shots: 0, fireT: A.rand(.5, 2), chal: w.chal });
+  }
+  w.queue.sort((a, b) => a.delay - b.delay);
+  const ok = w.ships.filter(s => s.st === 'ok');
+  // attaques
+  const attacking = w.al.filter(a => ['dive', 'beam', 'ret'].includes(a.st)).length;
+  if (!w.chal && !w.queue.length && ok.length && (w.diveT -= dt) <= 0 && attacking < 2 + Math.floor(w.stage / 2)) {
+    w.diveT = Math.max(.5, 2.4 - w.stage * .15) * A.rand(.6, 1.3);
+    startAttack(ok);
+  }
+  for (const a of w.al) updAlien(a, dt, ok);
+  w.al = w.al.filter(a => !a.dead);
+  for (const b of w.bul) {
+    b.x += b.vx * dt; b.y += b.vy * dt;
+    for (const s of w.ships) if (s.st === 'ok' && shipHit(s, b.x, b.y, 2)) b.dead = true;
+    if (b.y > H) b.dead = true;
+  }
+  w.bul = w.bul.filter(b => !b.dead);
+  updFree(dt);
+  if (!w.queue.length && !w.al.length && w.phase === 'play') {
+    w.phase = 'result'; w.timer = w.chal ? 4 : 1.5;
+    if (w.chal) {
+      const bonus = w.hits === 40 ? 10000 : w.hits * 100;
+      w.ships.forEach(s => A.addScore(s.pid, Math.round(bonus / w.ships.length)));
+      w.result = bonus; A.jingle('bonus');
+    }
+  }
+}
+function startAttack(ok) {
+  const form = w.al.filter(a => a.st === 'form'); if (!form.length) return;
+  const tgt = A.pick(ok), bosses = form.filter(a => a.kind === 'boss');
+  if (bosses.length && Math.random() < .35) {
+    const b = A.pick(bosses);
+    if (!w.capturing && !b.captive && !ok.some(s => s.dual) && Math.random() < .5) {
+      w.capturing = true; b.st = 'beamdive';
+      b.sp = spline([[b.x, b.y], [b.x + 20, b.y - 15], [(b.x + tgt.x) / 2, 120], [tgt.x, 175]]); b.d = 0; b.beamT = 0; return;
+    }
+    dive(b, tgt);
+    form.filter(e => e.kind === 'but' && e.r === 1 && Math.abs(e.c - b.c) <= 1).slice(0, 2).forEach((e, i) => { e.st = 'escort'; e.leader = b; e.off = i ? 14 : -14; });
+    return;
+  }
+  const pool = form.filter(a => a.kind !== 'boss');
+  if (pool.length) dive(A.pick(pool), tgt);
+}
+function dive(a, tgt) {
+  const side = a.x < 112 ? -1 : 1, tx = A.clamp(tgt.x, 30, 194);
+  a.st = 'dive'; a.d = 0; a.shots = 0; a.fireT = A.rand(.3, .9);
+  a.sp = spline([[a.x, a.y], [a.x + side * 20, a.y - 18], [a.x + side * 34, a.y + 4], [tx - side * 30, 150], [tx, 210], [tx + side * 40, 262], [tx + side * 10, 310]]);
+}
+function updAlien(a, dt, ok) {
+  const ox = a.x, oy = a.y;
+  const fly = (spd) => { a.d += spd * dt; const p = posAt(a.sp, a.d); a.x = p[0]; a.y = p[1]; return a.d >= a.sp.total; };
+  switch (a.st) {
+    case 'path':
+      if (fly(150)) { if (a.chal) { a.dead = true; return; } a.st = 'toslot'; }
+      break;
+    case 'toslot': case 'ret': {
+      const [sx, sy] = slot(a), dx = sx - a.x, dy = sy - a.y, d = Math.hypot(dx, dy);
+      if (d < 3) { a.st = 'form'; break; }
+      a.x += dx / d * 130 * dt; a.y += dy / d * 130 * dt; break;
+    }
+    case 'form': { const [sx, sy] = slot(a); a.x = sx; a.y = sy; break; }
+    case 'dive':
+      if (fly(130 + w.stage * 4)) { a.x = slot(a)[0]; a.y = -12; a.st = 'ret'; }
+      break;
+    case 'escort':
+      if (!a.leader || a.leader.dead || a.leader.st !== 'dive') { a.leader = null; dive(a, ok[0] || { x: 112 }); break; }
+      a.x = a.leader.x + a.off; a.y = a.leader.y - 6; break;
+    case 'beamdive':
+      if (fly(110)) { a.st = 'beam'; a.beamT = 0; }
+      break;
+    case 'beam':
+      a.beamT += dt; A.hum('beam', 300 + Math.sin(w.t * 25) * 120, 'sawtooth', .025);
+      if (a.beamT > .6 && a.beamT < 3.4) for (const s of w.ships)
+        if (s.st === 'ok' && !s.dual && Math.abs(s.x - a.x) < 20 && !a.captive && !w.ships.some(o => o.st === 'pulled')) {
+          s.st = 'pulled'; s.y = SHIP_Y; s.boss = a; s.mis = []; A.melody([[392,1],[523,1],[392,1],[523,1],[392,1],[523,3]], .12, 'square', .07);
+        }
+      if (a.beamT > 4 && !w.ships.some(s => s.st === 'pulled' && s.boss === a)) { a.st = 'ret'; w.capturing = false; }
+      break;
+  }
+  if (a.st !== 'form') { a.vx = a.x - ox; a.vy = a.y - oy; }
+  // tir ennemi
+  if (!a.chal && (a.st === 'dive' || a.st === 'path' || a.st === 'escort') && ok.length && (a.fireT -= dt) <= 0 && a.y > 70 && a.y < 200 && a.shots < 2) {
+    a.shots++; a.fireT = A.rand(.4, 1.2);
+    const t = A.pick(ok);
+    w.bul.push({ x: a.x, y: a.y + 6, vx: A.clamp((t.x - a.x) * .5, -50, 50), vy: 150 + w.stage * 5 });
+  }
+  // collision avec les vaisseaux
+  if (a.st !== 'form') for (const s of w.ships) if (s.st === 'ok' && shipHit(s, a.x, a.y, 6)) { kill(a, s.pid, true); break; }
+}
+function kill(a, pid, crash) {
+  if (!crash && a.kind === 'boss' && --a.hp > 0) { A.tone(800, .1, 'square', .07, 400); return; }
+  a.dead = true; w.hits++;
+  const diving = a.st !== 'form';
+  let pts = PTS[a.kind][diving ? 1 : 0];
+  if (a.kind === 'boss' && diving) { const esc = w.al.filter(e => e.leader === a && !e.dead).length; pts = [1600, 800, 400][Math.min(esc, 2)]; }
+  if (a.chal) pts = 100;
+  A.addScore(pid, pts);
+  if (pts >= 400) w.pops.push({ x: a.x, y: a.y, s: pts, t: 1.2 });
+  A.burst(w.parts, a.x, a.y, a.kind === 'boss' ? ['#30d050', '#ffe030', '#fff'] : ['#fff', '#ffe030', '#ff3030', '#3060ff'], 16, 60);
+  A.noise(.3, .18, 2400, -2000);
+  if (a.st === 'beam' || a.st === 'beamdive') w.capturing = false;
+  if (a.captive) {
+    if (diving) { w.free.push({ pid: a.captive.pid, x: a.x, y: a.y - 14 }); A.addScore(pid, 1000); w.pops.push({ x: a.x, y: a.y - 20, s: 'SAUVE ! 1000', t: 1.5 }); A.jingle('bonus'); }
+    else A.burst(w.parts, a.x, a.y - 14, ['#ff4040', '#fff'], 20, 50);
+  }
+  w.ships.forEach(s => { if (s.st === 'pulled' && s.boss === a) { s.st = 'ok'; s.y = SHIP_Y; } });
+}
+function shipHit(s, x, y, r) {
+  const parts = s.dual ? [s.x - 6, s.x + 6] : [s.x];
+  for (const px of parts) if (Math.abs(x - px) < 5 + r && y > SHIP_Y - r && y < SHIP_Y + 11 + r) {
+    if (s.dual) { s.dual = false; s.x = px === s.x - 6 ? s.x + 6 : s.x - 6; A.burst(w.parts, px, SHIP_Y + 5, ['#fff', '#ff3030'], 25, 60); A.noise(.6, .25, 1500, -1200); }
+    else boom(s);
+    return true;
+  }
+  return false;
+}
+function boom(s) { s.st = 'boom'; s.t = 1.4; s.mis = []; A.burst(w.parts, s.x, SHIP_Y + 5, ['#fff', '#ff3030', '#ffe030', '#3060ff'], 40, 70, 1.2); A.noise(1.2, .3, 1200, -1000); }
+function updShip(s, dt) {
+  for (const m of s.mis) {
+    m.y -= 320 * dt;
+    if (m.y < 18) { m.dead = true; continue; }
+    for (const a of w.al) if (!a.dead && Math.abs(a.x - m.x) < 6 && Math.abs(a.y - m.y) < 6) { kill(a, s.pid); m.dead = true; break; }
+    if (m.dead) continue;
+    for (const a of w.al) if (a.captive && !a.dead && Math.abs(a.x - m.x) < 6 && Math.abs(a.y - 14 - m.y) < 6) { a.captive = null; m.dead = true; A.burst(w.parts, a.x, a.y - 14, ['#ff4040', '#fff'], 20, 50); A.noise(.4, .2); }
+  }
+  s.mis = s.mis.filter(m => !m.dead);
+  if (s.st === 'boom') { if ((s.t -= dt) <= 0) { s.st = A.die(s.pid) ? 'wait' : 'out'; s.t = 1.5; } return; }
+  if (s.st === 'wait') { if ((s.t -= dt) <= 0 && w.phase !== 'result') { s.st = 'ok'; s.x = s.home; s.dual = false; } return; }
+  if (s.st === 'pulled') {
+    const b = s.boss; s.y = (s.y || SHIP_Y) - 40 * dt; s.x += (b.x - s.x) * 2 * dt;
+    if (s.y <= b.y + 14) { b.captive = { pid: s.pid }; s.st = 'boom'; s.t = .01; b.st = 'ret'; w.capturing = false; A.msg('VAISSEAU CAPTURE !', 2); }
+    return;
+  }
+  if (s.st !== 'ok') return;
+  const i = A.input(s.pid);
+  s.x = A.clamp(s.x + ((i.right ? 1 : 0) - (i.left ? 1 : 0)) * 100 * dt, s.dual ? 14 : 8, W - (s.dual ? 14 : 8));
+  if (i.aP && s.mis.length < (s.dual ? 4 : 2)) {
+    for (const ox of s.dual ? [-6, 6] : [0]) s.mis.push({ x: Math.round(s.x + ox), y: SHIP_Y - 2 });
+    A.tone(1300, .12, 'square', .04, -1000);
+  }
+}
+function updFree(dt) {
+  for (const f of w.free) {
+    const s = w.ships[f.pid];
+    if (s && s.st === 'ok' && !s.dual) {
+      const tx = s.x + 12, dx = tx - f.x, dy = SHIP_Y - f.y, d = Math.hypot(dx, dy);
+      if (d < 3) { s.dual = true; s.x = A.clamp(s.x + 6, 14, W - 14); f.dead = true; A.jingle('bonus'); continue; }
+      f.x += dx / d * 90 * dt; f.y += dy / d * 90 * dt;
+    } else { f.y += 80 * dt; if (f.y > H) f.dead = true; }
+  }
+  w.free = w.free.filter(f => !f.dead);
+}
+
+// ---------- Rendu ----------
+function drawRot(spr, x, y, ang) {
+  const ctx = A.ctx; ctx.save(); ctx.translate(Math.round(x), Math.round(y)); if (ang) ctx.rotate(ang);
+  ctx.drawImage(spr, -Math.floor(spr.width / 2), -Math.floor(spr.height / 2)); ctx.restore();
+}
+function draw() {
+  const ctx = A.ctx;
+  w.stars.draw(w.t);
+  const fr = Math.floor(w.t * 3) % 2;
+  for (const a of w.al) {
+    if (a.st === 'beam') {
+      const top = a.y + 8, bot = SHIP_Y + 12, k = Math.min(1, a.beamT / .6), f = a.beamT > 3.4 ? Math.max(0, 1 - (a.beamT - 3.4) / .6) : 1;
+      for (let y = top; y < top + (bot - top) * k; y += 2) {
+        const hw = 4 + (y - top) / (bot - top) * 22 * f;
+        ctx.fillStyle = (Math.floor((y - w.t * 60) / 6) % 2) ? 'rgba(80,200,255,.75)' : 'rgba(40,90,255,.6)';
+        ctx.fillRect(Math.round(a.x - hw), y, Math.round(hw * 2), 1);
+      }
+    }
+    const spr = SPR[a.kind === 'boss' && a.hp === 1 ? 'boss2' : a.kind][a.st === 'form' ? fr : 0];
+    const ang = a.st === 'form' || a.st === 'beam' ? 0 : Math.atan2(a.vy, a.vx) - Math.PI / 2;
+    drawRot(spr, a.x, a.y, ang);
+    if (a.captive) A.drawC(CAPTIVE, a.x, a.y - 14);
+  }
+  for (const f of w.free) A.drawC(CAPTIVE, f.x, f.y);
+  ctx.fillStyle = '#ff6060'; for (const b of w.bul) { ctx.fillRect(Math.round(b.x), Math.round(b.y), 1, 4); }
+  for (const s of w.ships) {
+    if (s.st === 'ok') { if (s.dual) { A.draw(SHIPS[s.pid], s.x - 11, SHIP_Y); A.draw(SHIPS[s.pid], s.x + 1, SHIP_Y); } else A.draw(SHIPS[s.pid], s.x - 5, SHIP_Y); }
+    if (s.st === 'pulled') drawRot(SHIPS[s.pid], s.x, s.y + 5, w.t * 8);
+    ctx.fillStyle = '#80e0ff'; for (const m of s.mis) ctx.fillRect(m.x, Math.round(m.y), 1, 5);
+  }
+  A.drawParts(w.parts, 2);
+  for (const p of w.pops) A.text(p.s, p.x, p.y, '#30e0ff', 1, 'center');
+  A.players.forEach((p, i) => { for (let k = 0; k < Math.min(p.lives - 1, 4); k++) A.draw(SHIPS[i], i ? W - 16 - k * 13 : 4 + k * 13, H - 13); });
+  for (let k = 0; k < Math.min(w.stage, 8); k++) { const x = W / 2 + 20 - k * 6; ctx.fillStyle = '#ff3030'; ctx.fillRect(x, H - 12, 4, 3); ctx.fillStyle = '#fff'; ctx.fillRect(x + 1, H - 9, 1, 6); }
+  if (w.phase === 'intro') {
+    A.text(w.chal ? 'NIVEAU DEFI' : 'STAGE ' + w.stage, W / 2, 140, w.chal ? '#30e0ff' : '#ff3030', 1, 'center');
+    if (w.chal) A.text('TOUCHE-LES TOUS !', W / 2, 154, '#fff', 1, 'center');
+  }
+  if (w.phase === 'result' && w.chal) {
+    A.text('NOMBRE DE TOUCHES ' + w.hits, W / 2, 130, '#30e0ff', 1, 'center');
+    A.text(w.hits === 40 ? 'PARFAIT ! 10000' : 'BONUS ' + w.result, W / 2, 146, '#ffe030', 1, 'center');
+  }
+}
+function attract(ctx, t, y) {
+  A.text('- POINTS -', W / 2, y + 6, '#fff', 1, 'center');
+  const rows = [['boss', '150 / 400-1600'], ['but', '80 / 160'], ['bee', '50 / 100']];
+  rows.forEach(([k, s], i) => { A.drawC(SPR[k][Math.floor(t * 3) % 2], 50, y + 28 + i * 18); A.text(s, 70, y + 25 + i * 18, '#fff'); });
+  A.text('ATTENTION AU RAYON TRACTEUR !', W / 2, y + 84, '#30e0ff', 1, 'center');
+  A.text('SAUVE TON VAISSEAU = DOUBLE TIR', W / 2, y + 96, '#ffe030', 1, 'center');
+}
+A.run({
+  id: 'essaim', title: 'ESSAIM\nGALACTIQUE', lives: 3, bonus: 20000, bonusEvery: 70000,
+  logoColors: ['#e0ffff','#a0f0ff','#60d8ff','#30b8ff','#3090ff','#3060ff','#2040c0','#081040'],
+  help: () => ['J1: FLECHES + ESPACE (TIR)', 'J2: ' + A.lab('KeyD') + '/' + A.lab('KeyG') + ' + ' + A.lab('KeyA') + ' (TIR)'],
+  init, update, draw, attract
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>Galaxiens</title></head>
+<body>
+<script src="../commun/arcade.js"></script>
+<script>
+'use strict';
+// ============================================================
+//  GALAXIENS — dans l'esprit de Galaxian (1979)
+//  Formation qui ondule, attaques en piqué, vaisseau amiral
+//  escorté (gros bonus), ciel étoilé qui défile.
+// ============================================================
+const A = Arcade, W = 224, H = 288, SHIP_Y = 252;
+const S = s => s.split('|');
+const BUG = [S('....R.R....|....RRR....|W..BBBBB..W|WW.BYBYB.WW|WWWBBBBBWWW|WW.BBBBB.WW|W...BBB...W|.....B.....|....B.B....'),
+             S('....R.R....|....RRR....|...BBBBB...|.W.BYBYB.W.|.WWBBBBBWW.|.WWBBBBBWW.|..W.BBB.W..|.....B.....|....B.B....')];
+const FLAG = S('......Y......|.....YYY.....|R...YYYYY...R|RR.YYRYRYY.RR|RRRYYYYYYYRRR|RR.BBYYYBB.RR|R...BBYBB...R|....B.Y.B....|.....B.B.....|......B......');
+const TYPES = [
+  { pts: [60, 150], f: [A.sprite(FLAG, { Y: '#ffe030', R: '#ff3030', B: '#4060ff' })] },
+  { pts: [50, 100], f: BUG.map(b => A.sprite(b, { B: '#ff3030', W: '#ffe030', R: '#fff', Y: '#4060ff' })) },
+  { pts: [40, 80],  f: BUG.map(b => A.sprite(b, { B: '#c040ff', W: '#ff60ff', R: '#ff3030', Y: '#ffe030' })) },
+  { pts: [30, 60],  f: BUG.map(b => A.sprite(b, { B: '#3070ff', W: '#20c0ff', R: '#ff3030', Y: '#ffe030' })) }
+];
+TYPES[0].f.push(TYPES[0].f[0]);
+const SHIP_ART = S('.....R.....|.....W.....|.....W.....|....WWW....|..B.WWW.B..|..BWWRWWB..|.BWWWRWWWB.|BWWWWWWWWWB|BWW.WWW.WWB|B...WWW...B|....R.R....');
+const SHIPS = [A.sprite(SHIP_ART, { R: '#ff3030', W: '#f0f0f0', B: '#4060ff' }), A.sprite(SHIP_ART, { R: '#ff3030', W: '#60ffb0', B: '#ffe030' })];
+const ROWS = [[3, 6], [2, 3, 4, 5, 6, 7], [1, 2, 3, 4, 5, 6, 7, 8], [0,1,2,3,4,5,6,7,8,9], [0,1,2,3,4,5,6,7,8,9], [0,1,2,3,4,5,6,7,8,9]];
+const ROWY = [36, 48, 60, 72, 84, 96];
+const ROWT = [0, 1, 2, 3, 3, 3];
+
+let w;
+function init(n) {
+  w = { t: 0, wave: 0, stars: A.starfield(70, 40, 18), ships: [], parts: [], pops: [] };
+  for (let i = 0; i < n; i++) w.ships.push({ pid: i, home: n === 1 ? 112 : (i ? 150 : 74), st: 'ok', t: 0, mis: null });
+  w.ships.forEach(s => s.x = s.home);
+  newWave();
+  return w;
+}
+function newWave() {
+  w.wave++; w.al = []; w.bul = []; w.fx = 40; w.diveT = 3; w.clearT = 0;
+  ROWS.forEach((cols, r) => cols.forEach(c => w.al.push({ r, c, type: ROWT[r], st: 'form', x: 0, y: 0 })));
+  w.al.forEach(a => { a.x = slotX(a); a.y = ROWY[a.r]; });
+}
+const slotX = a => w.fx + a.c * 16;
+
+function update(_, dt) {
+  w.t += dt; w.stars.update(dt); A.updParts(w.parts, dt);
+  w.pops.forEach(p => p.t -= dt); w.pops = w.pops.filter(p => p.t > 0);
+  w.fx = 40 + ((w.t * 8) % 56 < 28 ? (w.t * 8) % 28 : 28 - (w.t * 8) % 28) - 14;
+  A.hum('swarm', 90 + Math.sin(w.t * 6) * 6, 'square', .012);
+  for (const s of w.ships) updShip(s, dt);
+  const alive = w.al.filter(a => !a.dead);
+  if (!alive.length) { if (w.clearT <= 0) w.clearT = 2; if ((w.clearT -= dt) <= 0) newWave(); }
+  // déclenchement des attaques
+  const targets = w.ships.filter(s => s.st === 'ok');
+  if (targets.length && (w.diveT -= dt) <= 0) {
+    w.diveT = Math.max(.6, (2.8 - w.wave * .2) * (alive.length / 46 + .3)) * A.rand(.6, 1.2);
+    launchDive(alive);
+  }
+  let diving = 0;
+  for (const a of alive) { updAlien(a, dt, targets); if (a.st === 'dive') diving++; }
+  if (diving) A.hum('dive', 500 + Math.sin(w.t * 9) * 200, 'square', .015);
+  // tirs aliens
+  for (const b of w.bul) {
+    b.x += b.vx * dt; b.y += b.vy * dt;
+    for (const s of w.ships) if (s.st === 'ok' && Math.abs(b.x - s.x) < 5 && b.y > SHIP_Y && b.y < SHIP_Y + 10) { boom(s); b.dead = true; }
+    if (b.y > H) b.dead = true;
+  }
+  w.bul = w.bul.filter(b => !b.dead);
+}
+function launchDive(alive) {
+  const form = alive.filter(a => a.st === 'form'); if (!form.length) return;
+  const side = Math.random() < .5 ? -1 : 1;
+  const flags = form.filter(a => a.type === 0);
+  if (flags.length && Math.random() < .25) {
+    const f = A.pick(flags); startDive(f, side); f.escorts = 0; f.killedEsc = 0;
+    form.filter(a => a.type === 1 && Math.abs(a.c - f.c) <= 1).slice(0, 2).forEach((e, i) => { startDive(e, side); e.leader = f; e.off = i ? 12 : -12; f.escorts++; });
+    return;
+  }
+  const edge = side < 0 ? Math.min(...form.map(a => a.c)) : Math.max(...form.map(a => a.c));
+  const cand = form.filter(a => Math.abs(a.c - edge) <= 1 && a.type !== 0);
+  const n = w.wave > 2 && Math.random() < .3 ? 2 : 1;
+  for (let k = 0; k < n && cand.length; k++) startDive(cand.splice(A.irand(0, cand.length - 1), 1)[0], side);
+}
+function startDive(a, side) {
+  a.st = 'dive'; a.vx = side * 45; a.vy = -75; a.t = 0; a.side = side; a.shots = 0; a.fireT = A.rand(.3, .8); a.leader = null;
+  a.tgt = A.pick(w.ships.filter(s => s.st === 'ok'));
+}
+function updAlien(a, dt, targets) {
+  if (a.st === 'form') { a.x = slotX(a); a.y = ROWY[a.r]; return; }
+  a.t += dt;
+  if (a.st === 'ret') {
+    const tx = slotX(a), ty = ROWY[a.r], dx = tx - a.x, dy = ty - a.y, d = Math.hypot(dx, dy);
+    if (d < 2) { a.st = 'form'; return; }
+    a.x += dx / d * 70 * dt; a.y += dy / d * 70 * dt; return;
+  }
+  if (a.leader && !a.leader.dead && a.leader.st === 'dive') { a.x = a.leader.x + a.off; a.y = a.leader.y - 8; a.vx = a.leader.vx; a.vy = a.leader.vy; }
+  else {
+    a.leader = null;
+    if (a.vy < 95 + w.wave * 5) a.vy += 170 * dt;
+    if (a.t > .6) {
+      const tg = a.tgt && a.tgt.st === 'ok' ? a.tgt : targets[0];
+      const tx = (tg ? tg.x : 112) + Math.sin(a.t * 3) * 30;
+      a.vx = A.clamp(a.vx + A.clamp((tx - a.x) * 3, -150, 150) * dt, -75, 75);
+    }
+    a.x += a.vx * dt; a.y += a.vy * dt;
+  }
+  if ((a.fireT -= dt) <= 0 && a.y > 90 && a.y < 200 && a.shots < 2 + (w.wave > 3)) {
+    a.shots++; a.fireT = A.rand(.3, .7);
+    const tg = targets.length ? A.pick(targets) : null;
+    w.bul.push({ x: a.x, y: a.y + 6, vx: tg ? A.clamp((tg.x - a.x) * .4, -40, 40) : 0, vy: 130 + w.wave * 6 });
+  }
+  for (const s of w.ships) if (s.st === 'ok' && Math.abs(a.x - s.x) < 9 && Math.abs(a.y - (SHIP_Y + 5)) < 8) { boom(s); kill(a, s.pid); return; }
+  if (a.y > H + 8) { a.y = -10; a.x = slotX(a); a.st = 'ret'; }
+}
+function kill(a, pid) {
+  a.dead = true;
+  let pts = TYPES[a.type].pts[a.st === 'form' ? 0 : 1];
+  if (a.type === 0 && a.st !== 'form') pts = [150, 200, 800][Math.min(a.killedEsc || 0, 2)];
+  if (a.type === 1 && a.leader && !a.leader.dead) a.leader.killedEsc = (a.leader.killedEsc || 0) + 1;
+  A.addScore(pid, pts);
+  if (pts >= 150) w.pops.push({ x: a.x, y: a.y, s: pts, t: 1.2 });
+  A.burst(w.parts, a.x, a.y, ['#fff', '#ffe030', '#ff3030', '#ff8020'], 16, 55);
+  A.noise(.3, .18, 2500, -2200);
+}
+function boom(s) {
+  s.st = 'boom'; s.t = 1.4; s.mis = null;
+  A.burst(w.parts, s.x, SHIP_Y + 5, ['#fff', '#ff3030', '#ffe030', '#4060ff'], 40, 70, 1.2);
+  A.noise(1.2, .3, 1200, -1000);
+}
+function updShip(s, dt) {
+  if (s.st === 'boom') { if ((s.t -= dt) <= 0) { s.st = A.die(s.pid) ? 'wait' : 'out'; s.t = 1.5; } return; }
+  if (s.st === 'wait') { if ((s.t -= dt) <= 0) { s.st = 'ok'; s.x = s.home; } return; }
+  if (s.st !== 'ok') return;
+  const i = A.input(s.pid);
+  s.x = A.clamp(s.x + ((i.right ? 1 : 0) - (i.left ? 1 : 0)) * 90 * dt, 8, W - 8);
+  if (i.aP && !s.mis) { s.mis = { x: Math.round(s.x), y: SHIP_Y - 2 }; A.tone(1500, .15, 'square', .04, -1200); }
+  if (s.mis) {
+    for (let k = 0; k < 4 && s.mis; k++) {
+      s.mis.y -= 300 * dt / 4;
+      if (s.mis.y < 20) { s.mis = null; break; }
+      for (const a of w.al) if (!a.dead && Math.abs(a.x - s.mis.x) < 6 && Math.abs(a.y - s.mis.y) < 5) { kill(a, s.pid); s.mis = null; break; }
+    }
+  }
+}
+
+function draw() {
+  const ctx = A.ctx;
+  w.stars.draw(w.t);
+  const fr = Math.floor(w.t * 3) % 2;
+  for (const a of w.al) if (!a.dead) {
+    let spr = TYPES[a.type].f[a.st === 'form' ? fr : 0];
+    if (a.st === 'dive' && a.vy < 0) spr = A.flipY(spr);
+    A.drawC(spr, a.x, a.y);
+  }
+  ctx.fillStyle = '#ffff60'; for (const b of w.bul) ctx.fillRect(Math.round(b.x), Math.round(b.y), 1, 4);
+  for (const s of w.ships) {
+    if (s.st === 'ok') { A.draw(SHIPS[s.pid], s.x - 5, SHIP_Y); if (!s.mis) { ctx.fillStyle = '#ffff60'; ctx.fillRect(Math.round(s.x), SHIP_Y - 3, 1, 3); } }
+    if (s.mis) { ctx.fillStyle = '#ffff60'; ctx.fillRect(s.mis.x, Math.round(s.mis.y), 1, 4); }
+  }
+  A.drawParts(w.parts, 2);
+  for (const p of w.pops) A.text(p.s, p.x, p.y, '#30e0ff', 1, 'center');
+  A.players.forEach((p, i) => { for (let k = 0; k < Math.min(p.lives - 1, 4); k++) A.draw(SHIPS[i], i ? W - 16 - k * 13 : 4 + k * 13, H - 13); });
+  for (let k = 0; k < Math.min(w.wave, 6); k++) { ctx.fillStyle = '#ff3030'; ctx.fillRect(W / 2 - 18 + k * 7, H - 12, 4, 3); ctx.fillStyle = '#ffe030'; ctx.fillRect(W / 2 - 18 + k * 7, H - 9, 1, 6); }
+  if (w.clearT > 0) A.text('VAGUE ' + (w.wave + 1), W / 2, 150, '#fff', 1, 'center');
+}
+function attract(ctx, t, y) {
+  A.text('- SCORE ADVANCE TABLE -', W / 2, y + 6, '#fff', 1, 'center');
+  A.text('EN FORMATION   EN PIQUE', 120, y + 22, '#30e0ff', 1, 'center');
+  const lines = [[0, '60', '150-800'], [1, '50', '100'], [2, '40', '80'], [3, '30', '60']];
+  lines.forEach(([ty, a, b], i) => { const yy = y + 38 + i * 16; A.drawC(TYPES[ty].f[Math.floor(t * 3) % 2], 30, yy + 3); A.text(a, 82, yy, '#fff', 1, 'center'); A.text(b, 162, yy, '#fff', 1, 'center'); });
+}
+A.run({
+  id: 'galaxiens', title: 'GALAXIENS', sub: '- WE ARE THE GALAXIENS -', lives: 3, bonus: 7000,
+  logoColors: ['#ffffff','#c0e0ff','#90c0ff','#60a0ff','#4080ff','#3060e0','#2040b0','#081040'],
+  help: () => ['J1: FLECHES + ESPACE (TIR)', 'J2: ' + A.lab('KeyD') + '/' + A.lab('KeyG') + ' + ' + A.lab('KeyA') + ' (TIR)'],
+  init, update, draw, attract
+});
+</script>
+</body>
+</html>

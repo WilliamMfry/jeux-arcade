@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>Mille-Pattes</title></head>
+<body>
+<script src="../commun/arcade.js"></script>
+<script>
+'use strict';
+// ============================================================
+//  MILLE-PATTES — dans l'esprit de Centipede (1980)
+//  Champ de champignons, mille-pattes qui se divise, araignée,
+//  puce, scorpion. J1 se joue à la souris (comme le trackball
+//  de la borne) ou aux flèches ; tir automatique en maintenant.
+// ============================================================
+const A = Arcade, W = 224, H = 288, Y0 = 24, COLS = 28, ROWS = 32, ZONE = 26;
+const PALS = [
+  { m: '#ff8020', s: '#3060ff', c: '#30e030', h: '#ff3030' },
+  { m: '#30e0ff', s: '#ff30a0', c: '#ffe030', h: '#30e030' },
+  { m: '#ff30ff', s: '#30e030', c: '#30a0ff', h: '#ffe030' },
+  { m: '#ffe030', s: '#ff3030', c: '#ff60ff', h: '#30e0ff' },
+  { m: '#30ff80', s: '#ffa020', c: '#ff3030', h: '#ffffff' }
+];
+const cellY = r => Y0 + r * 8;
+
+let w;
+function init(n) {
+  w = { t: 0, wave: 0, mush: Array.from({ length: ROWS }, () => Array(COLS).fill(null)), segs: [], ps: [], parts: [], pops: [], spider: null, spT: 5, flea: null, scorp: null, scT: 15, headT: 0 };
+  for (let k = 0; k < 40; k++) { const r = A.irand(2, ZONE + 3), c = A.irand(0, COLS - 1); w.mush[r][c] = { hp: 4, poison: false }; }
+  for (let i = 0; i < n; i++) w.ps.push({ pid: i, home: n === 1 ? 108 : (i ? 140 : 76), st: 'ok', shot: null });
+  w.ps.forEach(spawn);
+  nextWave();
+  return w;
+}
+function spawn(p) { Object.assign(p, { x: p.home, y: H - 16, st: 'ok', shot: null }); }
+const pal = () => PALS[(w.wave - 1) % PALS.length];
+function nextWave() {
+  w.wave++; w.segs = [];
+  const len = Math.max(6, 12 - (w.wave - 1)), heads = Math.min(w.wave - 1, 6);
+  let prev = null;
+  for (let k = 0; k < len; k++) { const s = { x: 112 - k * 8, y: cellY(0), dir: 1, vdir: 1, turn: 0, leader: prev, acc: 0 }; w.segs.push(s); prev = s; }
+  for (let k = 0; k < heads; k++) w.segs.push({ x: A.irand(0, COLS - 1) * 8, y: cellY(0), dir: Math.random() < .5 ? 1 : -1, vdir: 1, turn: 0, leader: null, acc: 0 });
+}
+const mushAt = (x, y) => { const c = Math.floor(x / 8), r = Math.floor((y - Y0) / 8); return r >= 0 && r < ROWS && c >= 0 && c < COLS ? w.mush[r][c] : null; };
+function addMush(x, y) { const c = Math.round(x / 8), r = Math.round((y - Y0) / 8); if (r >= 0 && r < ROWS - 1 && c >= 0 && c < COLS && !w.mush[r][c]) w.mush[r][c] = { hp: 4, poison: false }; }
+
+function update(_, dt) {
+  w.t += dt; A.updParts(w.parts, dt);
+  w.pops.forEach(p => p.t -= dt); w.pops = w.pops.filter(p => p.t > 0);
+  if (w.restore) { restoreStep(dt); return; }
+  const sp = 70 + Math.min(w.wave, 8) * 5;
+  for (const s of w.segs) { s.acc += sp * dt; while (s.acc >= 1) { s.acc--; stepSeg(s); } }
+  // battement du mille-pattes
+  if (w.segs.length) A.hum('beat', [196, 220, 247, 220][Math.floor(w.t * 8) % 4], 'square', .02);
+  // têtes supplémentaires si le mille-pattes s'attarde en bas
+  if (w.segs.some(s => cellRow(s) >= ZONE) && (w.headT += dt) > 6) { w.headT = 0; const d = Math.random() < .5 ? 1 : -1; w.segs.push({ x: d > 0 ? 0 : (COLS - 1) * 8, y: cellY(ZONE), dir: d, vdir: 1, turn: 0, leader: null, acc: 0 }); }
+  updSpider(dt); updFlea(dt); updScorp(dt);
+  for (const p of w.ps) updPlayer(p, dt);
+  if (!w.segs.length) nextWave();
+}
+const cellRow = s => Math.round((s.y - Y0) / 8);
+function stepSeg(s) {
+  if (s.turn > 0) {
+    s.y += s.vdir; s.turn--;
+    if (s.turn === 0) {
+      s.dir = -s.dir;
+      const r = cellRow(s);
+      if (s.dive) { if (r >= ROWS - 1) { s.dive = false; s.vdir = -1; } else { s.turn = 8; s.dir = -s.dir; } return; }
+      if (r >= ROWS - 1) s.vdir = -1; else if (s.vdir < 0 && r <= ZONE) s.vdir = 1;
+    }
+    return;
+  }
+  s.x += s.dir;
+  if (s.x % 8 === 0) {
+    const nx = s.x + s.dir * 8, m = mushAt(nx + 4, s.y + 4);
+    if (nx < 0 || nx > W - 8 || m) {
+      if (m && m.poison) s.dive = true;
+      s.turn = 8;
+    }
+  }
+}
+function updPlayer(p, dt) {
+  if (p.st === 'out') return;
+  if (p.st === 'dead') {
+    if ((p.t -= dt) <= 0) {
+      if (!A.die(p.pid)) { p.st = 'out'; return; }
+      if (w.ps.every(q => q.st !== 'ok')) startRestore(); else spawn(p);
+    }
+    return;
+  }
+  if (p.st === 'wait') return;
+  const i = A.input(p.pid);
+  let dx = ((i.right ? 1 : 0) - (i.left ? 1 : 0)) * 110 * dt, dy = ((i.down ? 1 : 0) - (i.up ? 1 : 0)) * 110 * dt;
+  if (p.pid === 0) { dx += A.mouse.dx * .8; dy += A.mouse.dy * .8; }
+  const blocked = (x, y) => { for (const [ox, oy] of [[0, 0], [6, 0], [0, 7], [6, 7]]) if (mushAt(x + ox, y + oy)) return true; return false; };
+  const nx = A.clamp(p.x + dx, 0, W - 7), ny = A.clamp(p.y + dy, cellY(ZONE), H - 9);
+  if (!blocked(nx, p.y)) p.x = nx;
+  if (!blocked(p.x, ny)) p.y = ny;
+  if ((i.a || (p.pid === 0 && A.mouse.down)) && !p.shot) { p.shot = { x: Math.round(p.x + 3), y: p.y - 2 }; A.tone(1600, .03, 'square', .03); }
+  if (p.shot) updShot(p, dt);
+  // contacts mortels
+  const hit = (x, y, ww, hh) => A.overlap(p.x + 1, p.y + 1, 5, 6, x, y, ww, hh);
+  if (w.segs.some(s => hit(s.x, s.y, 8, 8)) || (w.spider && hit(w.spider.x, w.spider.y, 12, 8)) || (w.flea && hit(w.flea.x, w.flea.y, 8, 8))) kill(p);
+}
+function kill(p) {
+  p.st = 'dead'; p.t = 1.8; p.shot = null;
+  A.burst(w.parts, p.x + 3, p.y + 4, ['#fff', pal().h, pal().c, '#ffe030'], 40, 70, 1.2); A.noise(1.2, .3, 1500, -1200);
+}
+function startRestore() {
+  // comme sur la borne : on répare les champignons abîmés (5 points chacun)
+  w.restore = []; for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) { const m = w.mush[r][c]; if (m && (m.hp < 4 || m.poison)) w.restore.push(m); }
+  w.restT = 0; w.spider = w.flea = w.scorp = null;
+}
+function restoreStep(dt) {
+  if ((w.restT -= dt) > 0) return;
+  w.restT = .06;
+  const m = w.restore.shift();
+  if (m) { m.hp = 4; m.poison = false; w.ps.forEach(p => { if (p.st !== 'out') A.addScore(p.pid, 5); }); A.tone(900, .04, 'square', .05); return; }
+  w.restore = null; w.wave--; nextWave(); w.ps.forEach(p => { if (p.st !== 'out') spawn(p); });
+}
+function updShot(p, dt) {
+  const s = p.shot;
+  for (let k = 0; k < 6 && p.shot; k++) {
+    s.y -= 420 * dt / 6;
+    if (s.y < Y0) { p.shot = null; return; }
+    const m = mushAt(s.x, s.y);
+    if (m) { if (--m.hp <= 0) { w.mush[Math.floor((s.y - Y0) / 8)][Math.floor(s.x / 8)] = null; A.addScore(p.pid, 1); } A.tone(400, .03, 'square', .04); p.shot = null; return; }
+    for (const g of w.segs) if (s.x >= g.x && s.x < g.x + 8 && s.y >= g.y && s.y < g.y + 8) { hitSeg(g, p.pid); p.shot = null; return; }
+    const sp = w.spider;
+    if (sp && A.overlap(s.x, s.y, 1, 1, sp.x, sp.y, 12, 8)) {
+      const d = Math.abs(sp.y - p.y), pts = d < 16 ? 900 : d < 32 ? 600 : 300;
+      A.addScore(p.pid, pts); w.pops.push({ x: sp.x + 6, y: sp.y, s: pts, t: 1.2 }); A.burst(w.parts, sp.x + 6, sp.y + 4, ['#fff', '#ff60ff'], 18, 50);
+      A.noise(.4, .2, 2000, -1500); w.spider = null; w.spT = A.rand(3, 7); p.shot = null; return;
+    }
+    const f = w.flea;
+    if (f && A.overlap(s.x, s.y, 1, 1, f.x, f.y, 8, 8)) { if (--f.hp <= 0) { A.addScore(p.pid, 200); A.burst(w.parts, f.x + 4, f.y + 4, ['#fff', '#ffe030'], 14, 50); w.flea = null; } else f.vy *= 2; p.shot = null; A.noise(.2, .15); return; }
+    const sc = w.scorp;
+    if (sc && A.overlap(s.x, s.y, 1, 1, sc.x, sc.y, 16, 8)) { A.addScore(p.pid, 1000); w.pops.push({ x: sc.x + 8, y: sc.y, s: 1000, t: 1.2 }); A.burst(w.parts, sc.x + 8, sc.y + 4, ['#fff', '#30e0ff'], 20, 50); w.scorp = null; p.shot = null; A.noise(.4, .2); return; }
+  }
+}
+function hitSeg(g, pid) {
+  A.addScore(pid, g.leader ? 10 : 100);
+  w.segs.forEach(s => { if (s.leader === g) s.leader = null; });
+  w.segs = w.segs.filter(s => s !== g);
+  addMush(g.x + (g.turn ? 0 : 0), g.y + (g.turn ? g.vdir * (8 - g.turn) : 0));
+  A.burst(w.parts, g.x + 4, g.y + 4, [pal().c, pal().h, '#fff'], 8, 40, .4);
+  A.noise(.15, .15, 3000, -2500);
+}
+function updSpider(dt) {
+  if (!w.spider) {
+    if ((w.spT -= dt) <= 0 && w.ps.some(p => p.st === 'ok')) { const d = Math.random() < .5 ? 1 : -1; w.spider = { x: d > 0 ? -12 : W, y: cellY(ZONE), vx: d * A.rand(30, 55), vy: 60, t: 0 }; }
+    return;
+  }
+  const s = w.spider; s.t += dt;
+  s.x += s.vx * dt; s.y += s.vy * dt;
+  if (s.y < cellY(ZONE - 2) || s.y > H - 12) { s.vy = -s.vy; s.y = A.clamp(s.y, cellY(ZONE - 2), H - 12); }
+  if (Math.random() < dt * 1.5) s.vy = (Math.random() < .5 ? -1 : 1) * A.rand(40, 90);
+  for (const [ox, oy] of [[2, 4], [9, 4]]) { const c = Math.floor((s.x + ox) / 8), r = Math.floor((s.y + oy - Y0) / 8); if (r >= 0 && r < ROWS && c >= 0 && c < COLS && w.mush[r][c] && Math.random() < .3) w.mush[r][c] = null; }
+  A.hum('spider', 300 + Math.abs(Math.sin(s.t * 6)) * 300, 'square', .015);
+  if (s.x < -20 || s.x > W + 8) { w.spider = null; w.spT = A.rand(3, 8); }
+}
+function updFlea(dt) {
+  if (!w.flea) {
+    let n = 0; for (let r = ZONE; r < ROWS; r++) for (let c = 0; c < COLS; c++) if (w.mush[r][c]) n++;
+    if (n < 5 && w.wave > 1 && Math.random() < dt * .4) w.flea = { x: A.irand(0, COLS - 1) * 8, y: Y0, vy: 110, hp: 2 };
+    return;
+  }
+  const f = w.flea, oy = f.y; f.y += f.vy * dt;
+  if (Math.floor((oy - Y0) / 8) !== Math.floor((f.y - Y0) / 8) && Math.random() < .3) addMush(f.x, Math.floor((f.y - Y0) / 8) * 8 + Y0);
+  A.hum('flea', 1500 - (f.y - Y0) * 4, 'square', .015);
+  if (f.y > H) w.flea = null;
+}
+function updScorp(dt) {
+  if (!w.scorp) {
+    if (w.wave > 2 && (w.scT -= dt) <= 0) { const d = Math.random() < .5 ? 1 : -1; w.scorp = { x: d > 0 ? -16 : W, y: cellY(A.irand(3, 14)), vx: d * 40 }; w.scT = A.rand(12, 20); }
+    return;
+  }
+  const s = w.scorp; s.x += s.vx * dt;
+  const m = mushAt(s.x + 8, s.y + 4); if (m) m.poison = true;
+  if (s.x < -20 || s.x > W + 4) w.scorp = null;
+}
+
+// ---------- Rendu ----------
+function drawMush(x, y, m) {
+  const ctx = A.ctx, p = pal(), h = Math.ceil(m.hp * 2);
+  const cap = m.poison ? '#ff30ff' : p.m, stem = m.poison ? '#30e0ff' : p.s;
+  ctx.fillStyle = cap; ctx.fillRect(x + 2, y, 4, Math.min(h, 1)); if (h > 1) ctx.fillRect(x + 1, y + 1, 6, Math.min(h - 1, 1)); if (h > 2) ctx.fillRect(x, y + 2, 8, Math.min(h - 2, 2));
+  if (h > 4) { ctx.fillStyle = stem; ctx.fillRect(x + 2, y + 4, 4, Math.min(h - 4, 3)); }
+}
+function drawSeg(s) {
+  const ctx = A.ctx, p = pal(), x = Math.round(s.x), y = Math.round(s.y), leg = Math.floor(w.t * 10 + s.x / 4) % 2;
+  ctx.fillStyle = s.leader ? p.c : p.h; ctx.fillRect(x + 1, y + 1, 6, 6); ctx.fillRect(x + 2, y, 4, 8); ctx.fillRect(x, y + 2, 8, 4);
+  ctx.fillStyle = p.s; ctx.fillRect(x + (leg ? 0 : 1), y + 7, 1, 1); ctx.fillRect(x + (leg ? 7 : 6), y + 7, 1, 1);
+  if (!s.leader) { ctx.fillStyle = '#fff'; ctx.fillRect(x + (s.dir > 0 ? 5 : 1), y + 2, 2, 2); }
+}
+function draw() {
+  const ctx = A.ctx, p = pal();
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) { const m = w.mush[r][c]; if (m) drawMush(c * 8, cellY(r), m); }
+  for (const s of w.segs) drawSeg(s);
+  if (w.spider) { const s = w.spider, x = Math.round(s.x), y = Math.round(s.y), l = Math.floor(w.t * 10) % 2; ctx.fillStyle = '#ff60ff'; ctx.fillRect(x + 4, y + 2, 4, 4); ctx.fillStyle = '#ffffff'; for (let k = 0; k < 3; k++) { ctx.fillRect(x + k, y + (l ? k * 2 : 6 - k * 2), 1, 1); ctx.fillRect(x + 11 - k, y + (l ? k * 2 : 6 - k * 2), 1, 1); } ctx.fillRect(x + 3, y + 1, 1, 6); ctx.fillRect(x + 8, y + 1, 1, 6); }
+  if (w.flea) { const f = w.flea, x = Math.round(f.x), y = Math.round(f.y); ctx.fillStyle = '#ffe030'; ctx.fillRect(x + 2, y, 4, 6); ctx.fillStyle = '#30e0ff'; ctx.fillRect(x + 1, y + 6, 1, 2); ctx.fillRect(x + 6, y + 6, 1, 2); ctx.fillRect(x + 3, y + 2, 2, 1); }
+  if (w.scorp) { const s = w.scorp, x = Math.round(s.x), y = Math.round(s.y); ctx.fillStyle = '#30e0ff'; ctx.fillRect(x + 2, y + 3, 10, 4); ctx.fillRect(x + (s.vx > 0 ? 12 : 0), y + 1, 4, 2); ctx.fillStyle = '#ff30ff'; ctx.fillRect(x + (s.vx > 0 ? 0 : 13), y, 3, 3); }
+  for (const pl of w.ps) {
+    if (pl.st === 'ok') {
+      const x = Math.round(pl.x), y = Math.round(pl.y);
+      ctx.fillStyle = pl.pid ? '#30e0ff' : '#ffe030'; ctx.fillRect(x + 2, y, 3, 3); ctx.fillStyle = pl.pid ? '#3060ff' : '#ff3030'; ctx.fillRect(x + 1, y + 3, 5, 3); ctx.fillRect(x, y + 6, 7, 2);
+    }
+    if (pl.shot) { ctx.fillStyle = '#fff'; ctx.fillRect(pl.shot.x, Math.round(pl.shot.y), 1, 6); }
+  }
+  A.drawParts(w.parts, 2);
+  for (const q of w.pops) A.text(q.s, q.x, q.y, '#fff', 1, 'center');
+  ctx.fillStyle = p.s; ctx.fillRect(0, H - 8, W, 1);
+  A.players.forEach((pl, i) => { for (let k = 0; k < Math.min(pl.lives - 1, 5); k++) { ctx.fillStyle = i ? '#30e0ff' : '#ffe030'; ctx.fillRect((i ? W - 10 - k * 9 : 4 + k * 9) + 2, H - 6, 3, 2); ctx.fillStyle = i ? '#3060ff' : '#ff3030'; ctx.fillRect((i ? W - 10 - k * 9 : 4 + k * 9), H - 4, 7, 3); } });
+}
+function attract(ctx, t, y) {
+  const fakeSeg = k => ({ x: 40 + ((t * 40 + k * 8) % 150), y: y + 12, dir: 1, leader: k < 9 ? 1 : null });
+  w = w && w.mush ? w : { wave: 1, t };
+  w.t = t; for (let k = 0; k < 10; k++) drawSeg(fakeSeg(k));
+  A.text('TETE 100   CORPS 10', W / 2, y + 30, '#fff', 1, 'center');
+  A.text('ARAIGNEE 300 / 600 / 900', W / 2, y + 42, '#ff60ff', 1, 'center');
+  A.text('PUCE 200   SCORPION 1000', W / 2, y + 54, '#30e0ff', 1, 'center');
+  A.text('J1 : SOURIS (TRACKBALL) + CLIC', W / 2, y + 72, '#ffe030', 1, 'center');
+}
+A.run({
+  id: 'mille-pattes', title: 'MILLE-PATTES', sub: '- LA FORET ENCHANTEE -', lives: 3, bonus: 12000, bonusEvery: 12000, mouse: 'rel',
+  logoColors: ['#e0ffe0','#b0ffa0','#80f060','#60e030','#40c020','#30a010','#207008','#082000'],
+  help: () => ['J1: SOURIS OU FLECHES + ESPACE', 'J2: ' + ['KeyR', 'KeyF', 'KeyD', 'KeyG'].map(A.lab).join(' ') + ' + ' + A.lab('KeyA')],
+  init, update, draw, attract
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,31 @@
+ADAPTATION FUTURE À RECALBOX
+============================
+
+1. LE POINT IMPORTANT
+Recalbox ne sait pas ouvrir de pages web : il lance des émulateurs (via
+RetroArch / Libretro). Les jeux tels qu'ils sont (HTML + JavaScript) ne
+pourront donc pas être copiés tels quels dans Recalbox.
+
+La voie prévue : la console imaginaire TIC-80, que Recalbox fait tourner
+sur toutes ses cartes (cœur Libretro TIC-80, aucun BIOS nécessaire). Chaque
+jeu deviendra un fichier .tic à déposer dans le dossier roms/tic80, et
+apparaîtra dans le menu de Recalbox comme n'importe quelle cartouche.
+Les jeux TIC-80 s'écrivent en Lua, en 240 x 136 pixels et 16 couleurs :
+il faudra traduire chaque jeu et redessiner les sprites un peu plus petits.
+
+2. CE QUI EST DÉJÀ PRÊT POUR CE PORTAGE
+- Chaque jeu sépare clairement sa logique (init / update / draw) du moteur
+  commun : la traduction en Lua se fait fonction par fonction.
+- Toutes les commandes passent par une seule fonction (A.input) et un seul
+  bloc de réglages (CONFIG au début de commun/arcade.js) : touches, numéros
+  de boutons de manette, Start, Select.
+- Les jeux se jouent entièrement à la manette, sans clavier ni souris
+  (Mille-pattes et Alerte missiles acceptent le stick en plus de la souris).
+- Disposition des boutons identique à Recalbox : A = tir / bouton 1,
+  B = bouton 2, Start = jouer / pause, Select + Start = quitter
+  (équivalent du "Hotkey + Start" de Recalbox).
+- Rotation d'écran (touche O) pour une borne à écran vertical.
+
+3. EN ATTENDANT
+Les jeux tournent sur n'importe quel PC ou Raspberry Pi avec Chrome / Edge /
+Chromium en plein écran (touche F), avec manettes ou encodeur USB d'arcade.

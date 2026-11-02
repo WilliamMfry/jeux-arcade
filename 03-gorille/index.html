@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>Le Gorille</title></head>
+<body>
+<script src="../commun/arcade.js"></script>
+<script>
+'use strict';
+// ============================================================
+//  LE GORILLE — dans l'esprit de Donkey Kong (1981)
+//  Poutrelles inclinées, échelles (dont cassées), tonneaux qui
+//  roulent et descendent les échelles, baril d'huile et boules
+//  de feu, marteaux, bonus qui décompte. Monte sauver la dame !
+// ============================================================
+const A = Arcade, W = 224, H = 288;
+// Plateformes : y(x) = y0 + pente * floor((x - x1) / 32) ; roll = sens des tonneaux
+const PL = [
+  { x1: 0,  x2: 224, y0: 272, s: -1, roll: -1 },
+  { x1: 0,  x2: 208, y0: 236, s: 1,  roll: 1 },
+  { x1: 16, x2: 224, y0: 200, s: -1, roll: -1 },
+  { x1: 0,  x2: 208, y0: 164, s: 1,  roll: 1 },
+  { x1: 16, x2: 224, y0: 128, s: -1, roll: -1 },
+  { x1: 0,  x2: 208, y0: 92,  s: 1,  roll: 1 },
+  { x1: 88, x2: 136, y0: 58,  s: 0,  roll: 0 }
+];
+const py = (p, x) => p.y0 + p.s * Math.floor((A.clamp(x, p.x1, p.x2 - 1) - p.x1) / 32);
+const LAD = [[80,0,1,0],[184,0,1,0],[32,1,2,1],[96,1,2,0],[168,1,2,1],[72,2,3,1],[112,2,3,0],[192,2,3,0],
+             [48,3,4,0],[136,3,4,1],[184,3,4,0],[64,4,5,1],[184,4,5,0],[120,5,6,0]]
+  .map(([x, lo, up, br]) => ({ x, lo, up, br: !!br }));
+const ladTop = l => py(PL[l.up], l.x), ladBot = l => py(PL[l.lo], l.x);
+
+// ---------- Sprites ----------
+const S = s => s.split('|');
+const HERO = {
+  stand: S('...RRRRR....|..RRRRRRRRR.|..KKKSSKS...|.KSKSSSKSSS.|.KSKKSSSKSSS|.KKSSSSKKKK.|...SSSSSSS..|..RRBRRR....|.RRRBRRBRRR.|RRRRBBBBRRRR|SSRBYBBYBRSS|SSSBBBBBBSSS|SS.BBBBBB.SS|...BBB.BBB..|..KKK...KKK.|.KKKK...KKKK'),
+  walk:  S('...RRRRR....|..RRRRRRRRR.|..KKKSSKS...|.KSKSSSKSSS.|.KSKKSSSKSSS|.KKSSSSKKKK.|...SSSSSSS..|..RRBRRR....|.RRRBRRBRR..|.RRRBBBBRR..|..SSBYBBYS..|..SSBBBBBS..|...BBBBBB...|....BBBBB...|....KKKKK...|...KKKKK....'),
+  jump:  S('SS.RRRRR..SS|SSRRRRRRRRSS|.RKKKSSKS.R.|.KSKSSSKSSS.|.KSKKSSSKSSS|.KKSSSSKKKK.|...SSSSSSS..|..RRBRRBRR..|..RRBBBBRR..|...BYBBYB...|...BBBBBB...|..BBBBBBBB..|..BBB..BBB..|.KKK....KKK.|KKKK....KKKK|............'),
+  climb: S('...RRRRR....|..RRRRRRR...|..KKKKKKK...|..KKKKKKK...|.SKKKKKKKS..|SS.KKKKK.SS.|SS.RRRRR.SS.|..RRRRRRR...|.RRBRRRBRR..|.RRBBBBBRR..|..BBBBBBB...|..BBBBBBB...|..BBB.BBB...|..BBB.BBB...|.KKK...KKK..|.KKK...KKK..')
+};
+const PAL = [{ R: '#ff2020', B: '#2040ff', S: '#ffc890', K: '#802000', Y: '#ffe030' },
+             { R: '#20d040', B: '#a040ff', S: '#ffc890', K: '#304000', Y: '#ffe030' }];
+const SPR = PAL.map(pal => { const o = {}; for (const k in HERO) { o[k] = A.sprite(HERO[k], pal); o[k + 'L'] = A.flipX(o[k]); } o.climb2 = A.flipX(o.climb); return o; });
+const HAMMER = A.sprite(S('.KKKKKK.|KKKKKKKK|KKKKKKKK|.KKKKKK.|...YY...|...YY...|...YY...|...YY...'), { K: '#c08040', Y: '#ffe060' });
+const HEART = A.sprite(S('.RR...RR.|RRRR.RRRR|RRRRRRRRR|RRRRRRRRR|.RRRRRRR.|..RRRRR..|...RRR...|....R....'), { R: '#ff3070' });
+const barrelCache = {};
+function barrelSpr(f, side) {
+  const k = f + '|' + side; if (barrelCache[k]) return barrelCache[k];
+  const c = document.createElement('canvas'); c.width = 12; c.height = 10; const g = c.getContext('2d');
+  if (side) {
+    g.fillStyle = '#c86818'; g.fillRect(1, 0, 10, 10); g.fillRect(0, 1, 12, 8);
+    g.fillStyle = '#5a2a08'; g.fillRect(0, 2, 12, 1); g.fillRect(0, 7, 12, 1); g.fillRect(2, 0, 1, 10); g.fillRect(9, 0, 1, 10);
+  } else {
+    const a = f * Math.PI / 4;
+    for (let y = 0; y < 10; y++) for (let x = 0; x < 12; x++) {
+      const dx = (x + .5 - 6) / 6, dy = (y + .5 - 5) / 5, r = dx * dx + dy * dy; if (r > 1) continue;
+      const band = Math.abs(Math.sin(Math.atan2(dy, dx) * 1 + a)) < .25;
+      g.fillStyle = r > .7 ? '#5a2a08' : band ? '#5a2a08' : (dx + dy < -.3 ? '#f0a050' : '#c86818'); g.fillRect(x, y, 1, 1);
+    }
+  }
+  return barrelCache[k] = c;
+}
+
+// ---------- Monde ----------
+let w;
+function init(n) {
+  w = { loop: 1, t: 0, heroes: [], pops: [], parts: [] };
+  for (let i = 0; i < n; i++) w.heroes.push({ pid: i, out: false });
+  newStage();
+  return w;
+}
+function newStage() {
+  w.barrels = []; w.fires = []; w.oilLit = false; w.kongT = 2.5; w.kongPose = 'beat'; w.poseT = 0;
+  w.hammers = [{ x: 168, p: 1 }, { x: 40, p: 4 }];
+  w.bonus = Math.min(8000, 4000 + w.loop * 1000); w.bonusT = 2;
+  w.heroes.forEach(spawn);
+  w.phase = 'ready'; w.timer = 2.2;
+}
+function spawn(h) {
+  if (h.out) return;
+  Object.assign(h, { x: h.pid ? 60 : 40, plat: 0, st: 'walk', face: 1, vx: 0, vy: 0, hammer: 0, inv: 0, anim: 0, over: new Set(), lad: null });
+  h.y = py(PL[0], h.x);
+}
+
+function update(_, dt) {
+  w.t += dt; A.updParts(w.parts, dt, 200);
+  w.pops.forEach(p => p.t -= dt); w.pops = w.pops.filter(p => p.t > 0);
+  if (w.phase === 'ready') { if ((w.timer -= dt) <= 0) w.phase = 'play'; return; }
+  if (w.phase === 'win') {
+    if ((w.timer -= dt) <= 0) { w.loop++; newStage(); }
+    return;
+  }
+  // musique de fond
+  const hamm = w.heroes.some(h => h.hammer > 0);
+  const notes = hamm ? [523, 659, 784, 659, 523, 659, 784, 1047] : [131, 0, 165, 0, 196, 0, 165, 0];
+  const nn = notes[Math.floor(w.t * (hamm ? 8 : 4)) % 8];
+  if (nn) A.hum('bgm', nn, hamm ? 'square' : 'triangle', hamm ? .025 : .05);
+  // bonus qui décompte
+  if ((w.bonusT -= dt) <= 0) {
+    w.bonusT = 2; w.bonus = Math.max(0, w.bonus - 100);
+    if (w.bonus === 0) for (const h of w.heroes) if (!h.out && h.st !== 'dead') kill(h);
+  }
+  updKong(dt);
+  for (const h of w.heroes) updHero(h, dt);
+  for (const b of w.barrels) updBarrel(b, dt);
+  w.barrels = w.barrels.filter(b => !b.dead);
+  for (const f of w.fires) updFire(f, dt);
+  w.fires = w.fires.filter(f => !f.dead);
+  collide();
+}
+function updKong(dt) {
+  w.poseT -= dt;
+  if ((w.kongT -= dt) <= 0) {
+    w.barrels.push({ x: 58, y: py(PL[5], 58), p: 5, st: 'roll', dir: 1, f: 0, vx: 0, vy: 0 });
+    w.kongPose = 'throw'; w.poseT = .4; A.tone(150, .15, 'square', .08, -60);
+    w.kongT = Math.max(1.1, 3.2 - w.loop * .35) * A.rand(.7, 1.3);
+  } else if (w.kongT < .7) w.kongPose = 'grab';
+  else if (w.poseT <= 0) w.kongPose = Math.floor(w.t * 2) % 5 === 0 ? 'beat' : 'idle';
+}
+function kill(h) { h.st = 'dead'; h.t = 2.2; h.hammer = 0; A.melody([[784,1],[659,1],[523,1],[392,1],[330,2],[262,4]], .11, 'triangle', .1); }
+function updHero(h, dt) {
+  if (h.out) return;
+  const i = A.input(h.pid);
+  h.inv = Math.max(0, h.inv - dt);
+  if (h.hammer > 0) h.hammer -= dt;
+  if (h.st === 'dead') {
+    if ((h.t -= dt) <= 0) {
+      if (!A.die(h.pid)) { h.out = true; return; }
+      const others = w.heroes.some(o => o !== h && !o.out && o.st !== 'dead');
+      if (others) { spawn(h); h.inv = 2.5; }
+      else newStage();
+    }
+    return;
+  }
+  if (h.st === 'walk') {
+    const mv = (i.right ? 1 : 0) - (i.left ? 1 : 0), p = PL[h.plat];
+    if (mv) { h.face = mv; h.x = A.clamp(h.x + mv * 42 * dt, p.x1 + 5, p.x2 - 5); h.anim += dt; if (Math.floor(h.anim * 7) !== Math.floor((h.anim - dt) * 7)) A.tone(90 + (Math.floor(h.anim * 7) % 2) * 30, .03, 'square', .05); }
+    h.y = py(p, h.x);
+    if (h.plat === 6) { win(h); return; }
+    if (h.hammer <= 0) {
+      if (i.up) { const l = LAD.find(l => l.lo === h.plat && Math.abs(h.x - l.x) <= 3); if (l) { h.st = 'climb'; h.lad = l; h.x = l.x; } }
+      else if (i.down) { const l = LAD.find(l => l.up === h.plat && !l.br && Math.abs(h.x - l.x) <= 3); if (l) { h.st = 'climb'; h.lad = l; h.x = l.x; } }
+      if (h.st === 'walk' && i.aP) { h.st = 'jump'; h.vy = -112; h.vx = mv * 42; h.jy0 = h.y; h.over.clear(); A.tone(300, .25, 'square', .06, 500); }
+    }
+  } else if (h.st === 'climb') {
+    const l = h.lad, dy = (i.down ? 1 : 0) - (i.up ? 1 : 0), bot = ladBot(l), top = ladTop(l);
+    h.y += dy * 30 * dt; if (dy) h.anim += dt;
+    if (h.y >= bot) { h.y = bot; h.st = 'walk'; h.plat = l.lo; }
+    else if (!l.br && h.y <= top) { h.y = top; h.st = 'walk'; h.plat = l.up; }
+    else if (l.br) h.y = Math.max(h.y, bot - (bot - top) * .4);
+  } else if (h.st === 'jump') {
+    const oy = h.y;
+    h.x = A.clamp(h.x + h.vx * dt, 4, W - 4); h.vy += 330 * dt; h.y += h.vy * dt;
+    if (h.vy > 0) for (let k = 0; k < PL.length; k++) {
+      const p = PL[k]; if (h.x < p.x1 || h.x > p.x2) continue;
+      const yy = py(p, h.x);
+      if (oy <= yy + 1 && h.y >= yy) {
+        h.y = yy; h.plat = k;
+        if (yy - h.jy0 > 20) kill(h); else h.st = 'walk';
+        break;
+      }
+    }
+    if (h.y > H + 10) kill(h);
+  }
+  // marteaux
+  for (const m of w.hammers) {
+    const my = py(PL[m.p], m.x) - 24;
+    if (!m.taken && A.overlap(h.x - 5, h.y - 16, 10, 16, m.x - 4, my, 8, 8)) { m.taken = true; h.hammer = 9; A.jingle('bonus'); }
+  }
+}
+function win(h) {
+  w.phase = 'win'; w.timer = 3.5; A.addScore(h.pid, w.bonus);
+  w.pops.push({ x: 112, y: 30, s: 'BONUS ' + w.bonus, t: 3 });
+  A.melody([[523,1],[659,1],[784,1],[1047,2],[988,1],[1047,4]], .12, 'square', .08);
+}
+function updBarrel(b, dt) {
+  const sp = 52 + w.loop * 8;
+  if (b.st === 'roll') {
+    const p = PL[b.p], ox = b.x;
+    b.x += b.dir * sp * dt; b.f += dt * 10;
+    // descendre une échelle ?
+    for (const l of LAD) if (l.up === b.p && (ox - l.x) * (b.x - l.x) <= 0 && ox !== l.x) {
+      const below = w.heroes.some(h => !h.out && h.y > b.y + 10 && Math.abs(h.x - l.x) < 40);
+      if (Math.random() < (below ? .55 : .2) + w.loop * .03) { b.st = 'ladder'; b.x = l.x; b.lad = l; return; }
+    }
+    if (b.p === 0 && b.x < 30) {   // dans le baril d'huile
+      b.dead = true; w.oilLit = true; A.noise(.4, .15, 1500, -1000);
+      if (w.fires.length < 1 + Math.min(w.loop, 3)) w.fires.push({ x: 28, y: py(PL[0], 28), p: 0, dir: 1, st: 'walk', t: 0 });
+      return;
+    }
+    if (b.x > p.x2 || b.x < p.x1) { b.st = 'fall'; b.vx = b.dir * 25; b.vy = 0; b.from = b.p; return; }
+    b.y = py(p, b.x);
+  } else if (b.st === 'ladder') {
+    b.y += 45 * dt; b.f += dt * 4;
+    if (b.y >= ladBot(b.lad)) { b.y = ladBot(b.lad); b.p = b.lad.lo; b.st = 'roll'; b.dir = PL[b.p].roll; }
+  } else if (b.st === 'fall') {
+    const oy = b.y; b.x += b.vx * dt; b.vy += 300 * dt; b.y += b.vy * dt;
+    for (let k = b.from - 1; k >= 0; k--) {
+      const p = PL[k]; if (b.x < p.x1 || b.x > p.x2) continue; const yy = py(p, b.x);
+      if (oy <= yy && b.y >= yy) { b.y = yy; b.p = k; b.st = 'roll'; b.dir = p.roll; A.tone(110, .06, 'square', .06); break; }
+    }
+    if (b.y > H + 20) b.dead = true;
+  }
+}
+function updFire(f, dt) {
+  f.t += dt;
+  if (f.st === 'walk') {
+    const p = PL[f.p], ox = f.x;
+    f.x += f.dir * (22 + w.loop * 3) * dt;
+    if (f.x < p.x1 + 6 || f.x > p.x2 - 6 || Math.random() < .004) f.dir = -f.dir;
+    f.x = A.clamp(f.x, p.x1 + 6, p.x2 - 6); f.y = py(p, f.x);
+    for (const l of LAD) if ((l.lo === f.p || (l.up === f.p && !l.br)) && (ox - l.x) * (f.x - l.x) <= 0 && Math.random() < .35) {
+      f.st = 'climb'; f.lad = l; f.x = l.x; f.up = l.lo === f.p; break;
+    }
+  } else {
+    const l = f.lad; f.y += (f.up ? -1 : 1) * 18 * dt;
+    if (f.up && f.y <= ladTop(l) + (l.br ? (ladBot(l) - ladTop(l)) * .6 : 0)) { if (l.br) f.up = false; else { f.y = ladTop(l); f.p = l.up; f.st = 'walk'; } }
+    else if (!f.up && f.y >= ladBot(l)) { f.y = ladBot(l); f.p = l.lo; f.st = 'walk'; }
+  }
+}
+function collide() {
+  for (const h of w.heroes) {
+    if (h.out || h.st === 'dead') continue;
+    const hit = (x, y, ww, hh) => A.overlap(h.x - 4, h.y - 14, 8, 13, x, y, ww, hh);
+    const hb = h.hammer > 0 ? (Math.floor(w.t * 6) % 2 ? [h.x - 6, h.y - 30, 12, 12] : [h.x + h.face * 10 - 6, h.y - 14, 12, 12]) : null;
+    const smash = (o, x, y) => {
+      const pts = A.pick([300, 500, 800]); A.addScore(h.pid, pts); o.dead = true;
+      w.pops.push({ x, y: y - 14, s: pts, t: 1 }); A.burst(w.parts, x, y - 5, ['#fff', '#ffe060', '#ff8020'], 14, 60); A.noise(.3, .2, 2500, -2000);
+    };
+    for (const b of w.barrels) {
+      if (b.dead) continue;
+      if (hb && A.overlap(...hb, b.x - 6, b.y - 10, 12, 10)) { smash(b, b.x, b.y); continue; }
+      if (!h.inv && hit(b.x - 5, b.y - 9, 10, 9)) { kill(h); break; }
+      if (h.st === 'jump' && !h.over.has(b) && Math.abs(b.x - h.x) < 6 && b.y > h.y && b.y - h.y < 26) {
+        h.over.add(b); A.addScore(h.pid, 100); w.pops.push({ x: h.x, y: h.y - 20, s: 100, t: .8 }); A.tone(1200, .1, 'square', .06);
+      }
+    }
+    if (h.st === 'dead') continue;
+    for (const f of w.fires) {
+      if (f.dead) continue;
+      if (hb && A.overlap(...hb, f.x - 5, f.y - 10, 10, 10)) { smash(f, f.x, f.y); continue; }
+      if (!h.inv && hit(f.x - 4, f.y - 9, 8, 9)) { kill(h); break; }
+    }
+  }
+}
+
+// ---------- Rendu ----------
+function drawGirder(p) {
+  const ctx = A.ctx;
+  for (let x = p.x1; x < p.x2; x += 8) {
+    const y = py(p, x);
+    ctx.fillStyle = '#ff2860'; ctx.fillRect(x, y, 8, 1); ctx.fillRect(x, y + 7, 8, 1);
+    for (let k = 0; k < 6; k++) { ctx.fillRect(x + k, y + 1 + k, 1, 1); ctx.fillRect(x + 7 - k, y + 1 + k, 1, 1); }
+  }
+}
+function drawLadder(l) {
+  const ctx = A.ctx, top = ladTop(l) + 8, bot = ladBot(l), len = bot - top;
+  ctx.fillStyle = '#20e8f0';
+  for (let y = top; y < bot; y++) {
+    if (l.br && y > top + len * .3 && y < top + len * .6) continue;
+    ctx.fillRect(l.x - 4, y, 1, 1); ctx.fillRect(l.x + 3, y, 1, 1);
+    if ((bot - y) % 4 === 2) ctx.fillRect(l.x - 4, y, 8, 1);
+  }
+}
+function drawKong(x, y, pose) {
+  const ctx = A.ctx, r = (c, a, b, ww, hh) => { ctx.fillStyle = c; ctx.fillRect(x + a, y + b, ww, hh); };
+  const K = '#b05818', L = '#f8b878', D = '#401000';
+  r(K, 6, 10, 20, 14); r(L, 10, 12, 12, 9); r(D, 15, 12, 2, 9);
+  r(K, 10, 0, 12, 11); r(L, 12, 4, 8, 7); r('#fff', 13, 5, 2, 2); r('#fff', 17, 5, 2, 2); r(D, 14, 6, 1, 1); r(D, 18, 6, 1, 1); r(D, 13, 9, 6, 1);
+  r(K, 6, 24, 7, 7); r(K, 19, 24, 7, 7); r(L, 4, 30, 9, 2); r(L, 19, 30, 9, 2);
+  if (pose === 'grab') { r(K, 1, -6, 6, 18); r(K, 25, -6, 6, 18); A.draw(barrelSpr(0, true), x + 10, y - 12); }
+  else if (pose === 'throw') { r(K, 1, 12, 5, 14); r(K, 26, 10, 14, 5); r(L, 38, 9, 3, 7); }
+  else if (pose === 'beat' && Math.floor(w.t * 8) % 2) { r(K, 2, 11, 8, 6); r(K, 22, 11, 8, 6); r(L, 8, 13, 4, 4); r(L, 20, 13, 4, 4); }
+  else { r(K, 1, 12, 5, 15); r(K, 26, 12, 5, 15); r(L, 1, 26, 5, 3); r(L, 26, 26, 5, 3); }
+}
+function drawLady(x, y) {
+  const ctx = A.ctx, r = (c, a, b, ww, hh) => { ctx.fillStyle = c; ctx.fillRect(x + a, y + b, ww, hh); };
+  r('#c05010', 2, 0, 8, 6); r('#ffc890', 4, 2, 4, 4); r('#ff60c0', 3, 6, 6, 4); r('#ff60c0', 2, 10, 8, 4); r('#ff60c0', 1, 14, 10, 4);
+  r('#ffc890', 4, 18, 1, 3); r('#ffc890', 7, 18, 1, 3); r('#ffc890', 1, 7, 2, 2); r('#ffc890', 9, 7, 2, 2);
+}
+function drawHero(h) {
+  const s = SPR[h.pid]; let spr;
+  if (h.st === 'dead') {
+    spr = A.rot90(s.stand, h.t > .8 ? Math.floor(h.t * 10) % 4 : 1);
+    A.draw(spr, h.x - spr.width / 2, h.y - spr.height); return;
+  }
+  if (h.inv && Math.floor(w.t * 10) % 2) return;
+  const L = h.face < 0 ? 'L' : '';
+  if (h.st === 'climb') spr = Math.floor(h.anim * 6) % 2 ? s.climb : s.climb2;
+  else if (h.st === 'jump') spr = s['jump' + L];
+  else spr = Math.floor(h.anim * 7) % 2 ? s['walk' + L] : s['stand' + L];
+  A.draw(spr, h.x - 6, h.y - 16);
+  if (h.hammer > 0 && (h.hammer > 2 || Math.floor(w.t * 8) % 2)) {
+    if (Math.floor(w.t * 6) % 2) A.draw(HAMMER, h.x - 4, h.y - 26);
+    else A.draw(A.rot90(HAMMER, h.face > 0 ? 1 : 3), h.face > 0 ? h.x + 6 : h.x - 14, h.y - 14);
+  }
+}
+function draw() {
+  const ctx = A.ctx;
+  LAD.forEach(drawLadder);
+  ctx.fillStyle = '#20e8f0';   // échelles décoratives derrière le gorille
+  for (const lx of [64, 80]) for (let y = 30; y < 92; y++) { ctx.fillRect(lx - 4, y, 1, 1); ctx.fillRect(lx + 3, y, 1, 1); if (y % 4 === 0) ctx.fillRect(lx - 4, y, 8, 1); }
+  PL.forEach(drawGirder);
+  // baril d'huile
+  const oy = py(PL[0], 16) - 16;
+  ctx.fillStyle = '#2050ff'; ctx.fillRect(14, oy, 16, 16); ctx.fillStyle = '#80b0ff'; ctx.fillRect(14, oy + 2, 16, 1); ctx.fillRect(14, oy + 13, 16, 1);
+  A.text('OIL', 22, oy + 5, '#fff', 1, 'center');
+  if (w.oilLit) for (let k = 0; k < 6; k++) { ctx.fillStyle = A.pick(['#ffe040', '#ff8020', '#ff3010']); ctx.fillRect(15 + k * 2 + A.irand(0, 1), oy - A.irand(2, 7), 2, A.irand(2, 6)); }
+  for (const m of w.hammers) if (!m.taken) A.draw(HAMMER, m.x - 4, py(PL[m.p], m.x) - 24);
+  drawLady(100, 36);
+  if (w.phase === 'win') A.draw(HEART, 114, 28);
+  else if (Math.floor(w.t * 2) % 2) A.text('HELP!', 132, 36, '#ff60c0');
+  drawKong(16, py(PL[5], 16) - 32, w.kongPose);
+  for (const b of w.barrels) A.draw(barrelSpr(Math.floor(b.f) % 8, b.st === 'ladder'), b.x - 6, b.y - 10);
+  for (const f of w.fires) {
+    const x = Math.round(f.x - 5), y = Math.round(f.y - 11);
+    ctx.fillStyle = '#ff3010'; ctx.fillRect(x + 1, y + 4, 8, 7); ctx.fillStyle = '#ffe040'; ctx.fillRect(x + 3, y + 6, 4, 4);
+    for (let k = 0; k < 4; k++) { ctx.fillStyle = A.pick(['#ffe040', '#ff8020']); ctx.fillRect(x + 1 + k * 2, y + A.irand(0, 3), 2, 4); }
+    ctx.fillStyle = '#000'; ctx.fillRect(x + 3, y + 7, 1, 1); ctx.fillRect(x + 6, y + 7, 1, 1);
+  }
+  for (const h of w.heroes) if (!h.out) drawHero(h);
+  A.drawParts(w.parts, 2);
+  for (const p of w.pops) A.text(p.s, p.x, p.y, '#fff', 1, 'center');
+  // tableau de bord
+  A.text('L=' + String(w.loop).padStart(2, '0'), 8, 20, '#2050ff');
+  A.players.forEach((p, i) => { for (let k = 0; k < Math.min(p.lives - 1, 4); k++) { ctx.fillStyle = PAL[i].R; ctx.fillRect(8 + k * 7, 30 + i * 8, 5, 3); ctx.fillStyle = PAL[i].B; ctx.fillRect(8 + k * 7, 33 + i * 8, 5, 3); } });
+  ctx.strokeStyle = '#2050ff'; ctx.lineWidth = 1; ctx.strokeRect(W - 56.5, 19.5, 50, 22);
+  A.text('BONUS', W - 31, 22, '#20e8f0', 1, 'center'); A.text(w.bonus, W - 31, 32, w.bonus < 1000 && Math.floor(w.t * 4) % 2 ? '#ff2020' : '#fff', 1, 'center');
+  if (w.phase === 'ready') { ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.fillRect(40, 140, 144, 30); A.text('NIVEAU ' + w.loop, W / 2, 145, '#fff', 1, 'center'); A.text('SAUVE LA DAME !', W / 2, 157, '#ff60c0', 1, 'center'); }
+}
+function attract(ctx, t, y) {
+  const fake = { t };
+  const save = w; w = fake; w.kongPose = 'beat'; drawKong(W / 2 - 16, y + 14, Math.floor(t) % 3 === 0 ? 'beat' : 'idle'); w = save;
+  for (let x = 40; x < 184; x += 8) { const yy = y + 54; ctx.fillStyle = '#ff2860'; ctx.fillRect(x, yy, 8, 1); ctx.fillRect(x, yy + 7, 8, 1); for (let k = 0; k < 6; k++) { ctx.fillRect(x + k, yy + 1 + k, 1, 1); ctx.fillRect(x + 7 - k, yy + 1 + k, 1, 1); } }
+  const bx = 40 + ((t * 50) % 144);
+  ctx.drawImage(barrelSpr(Math.floor(t * 10) % 8, false), Math.round(bx - 6), y + 44);
+  ctx.drawImage(SPR[0].stand, 60, y + 38);
+  A.text('SAUTE LES TONNEAUX : 100', W / 2, y + 72, '#fff', 1, 'center');
+  A.text('MARTEAU : 300 / 500 / 800', W / 2, y + 84, '#fff', 1, 'center');
+}
+A.run({
+  id: 'gorille', title: 'LE GORILLE', sub: '- SAUVE LA DAME ! -', lives: 3, bonus: 7000,
+  logoColors: ['#ffe0c0','#ffc080','#f8a050','#e88030','#c86018','#a04010','#703008','#301000'],
+  help: () => ['J1: FLECHES + ESPACE (SAUT)', 'J2: ' + ['KeyR', 'KeyF', 'KeyD', 'KeyG'].map(A.lab).join(' ') + ' + ' + A.lab('KeyA') + ' (SAUT)'],
+  init, update, draw, attract
+});
+</script>
+</body>
+</html>

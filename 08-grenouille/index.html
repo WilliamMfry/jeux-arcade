@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><title>Grenouille</title></head>
+<body>
+<script src="../commun/arcade.js"></script>
+<script>
+'use strict';
+// ============================================================
+//  GRENOUILLE — dans l'esprit de Frogger (1981)
+//  Traverse la route puis la rivière (rondins, tortues qui
+//  plongent) et ramène 5 grenouilles dans leurs abris.
+// ============================================================
+const A = Arcade, W = 224, H = 288, TOP = 32, ROWS = 13, TIME = 30;
+const rowY = r => TOP + r * 16;
+const S = s => s.split('|');
+const FROG = [S('..G......G..|.GGG....GGG.|..GGYGGYGG..|...GYGGYG...|...GGGGGG...|..GGGWWGGG..|..GGWWWWGG..|.G.GGWWGG.G.|GG.GGGGGG.GG|G..GGGGGG..G|GG..GGGG..GG|.G........G.'),
+              S('G..........G|GG..GGGG..GG|.GGGYGGYGGG.|...GYGGYG...|...GGGGGG...|..GGGWWGGG..|..GGWWWWGG..|...GGWWGG...|...GGGGGG...|..GG....GG..|.GG......GG.|GG........GG')];
+const FROGS = [{ G: '#30e030', Y: '#ffe030', W: '#ffe0a0' }, { G: '#ff60d0', Y: '#ffe030', W: '#ffd0f0' }]
+  .map(pal => FROG.map(f => { const s = A.sprite(f, pal); return [s, A.rot90(s, 3), A.rot90(s, 2), A.rot90(s, 1)]; }));   // haut, gauche, bas, droite
+const DX = [0, -1, 0, 1], DY = [-1, 0, 1, 0];
+const BAYS = [16, 64, 112, 160, 208];
+
+// Voies : r = rangée, d = sens, v = vitesse, k = type, w = largeur des objets, o = positions de départ
+const LANES = [
+  { r: 1, d: 1,  v: 34, k: 'log',    w: 64, o: [0, 120, 240] },
+  { r: 2, d: -1, v: 44, k: 'turtle', w: 32, o: [0, 64, 128, 192], dive: [1] },
+  { r: 3, d: 1,  v: 56, k: 'log',    w: 96, o: [0, 160] },
+  { r: 4, d: 1,  v: 26, k: 'log',    w: 48, o: [0, 96, 192] },
+  { r: 5, d: -1, v: 38, k: 'turtle', w: 48, o: [0, 80, 160, 240], dive: [2] },
+  { r: 7, d: -1, v: 30, k: 'truck',  w: 32, o: [0, 140] },
+  { r: 8, d: 1,  v: 85, k: 'racer',  w: 16, o: [0] },
+  { r: 9, d: -1, v: 36, k: 'car',    w: 16, o: [0, 80, 160] },
+  { r: 10, d: 1, v: 28, k: 'dozer',  w: 16, o: [0, 70, 140] },
+  { r: 11, d: -1, v: 32, k: 'yellow', w: 16, o: [0, 72, 144] }
+];
+const LEN = W + 64;
+
+let w;
+function init(n) {
+  w = { t: 0, level: 1, bays: [0, 0, 0, 0, 0], frogs: [], pops: [], fly: null, flyT: 6, lt: 0 };
+  for (let i = 0; i < n; i++) w.frogs.push({ pid: i, home: n === 1 ? 104 : (i ? 136 : 72) });
+  w.frogs.forEach(spawn);
+  return w;
+}
+function spawn(f) { Object.assign(f, { x: f.home, r: 12, dir: 0, hop: 0, st: 'ok', best: 12, time: TIME, t: 0 }); }
+const laneSpeed = l => l.v * (1 + (w.level - 1) * .15);
+function items(l) {   // positions actuelles des objets d'une voie
+  return l.o.map((o, k) => {
+    const x = ((o + w.lt * laneSpeed(l) * l.d) % LEN + LEN) % LEN - 32;
+    let sub = 0;
+    if (l.dive && l.dive.includes(k)) { const ph = (w.t * .35 + k * .3) % 1; sub = ph > .82 ? 2 : ph > .65 ? 1 : 0; }
+    return { x, w: l.w, sub };
+  });
+}
+function update(_, dt) {
+  w.t += dt; w.lt += dt;
+  w.pops.forEach(p => p.t -= dt); w.pops = w.pops.filter(p => p.t > 0);
+  if (w.clearT > 0) { if ((w.clearT -= dt) <= 0) { w.bays = [0, 0, 0, 0, 0]; w.level++; w.frogs.forEach(f => { if (f.st !== 'out') spawn(f); }); } return; }
+  // mouche bonus dans un abri
+  if (w.fly) { if ((w.fly.t -= dt) <= 0) w.fly = null; }
+  else if ((w.flyT -= dt) <= 0) { w.flyT = A.rand(6, 12); const free = [0, 1, 2, 3, 4].filter(k => !w.bays[k]); if (free.length) w.fly = { k: A.pick(free), t: 5 }; }
+  for (const f of w.frogs) updFrog(f, dt);
+  // musique : petite ritournelle
+  const tune = [392, 440, 494, 523, 494, 440, 392, 0, 330, 392, 440, 392, 330, 294, 262, 0];
+  const nn = tune[Math.floor(w.t * 5) % 16]; if (nn) A.hum('tune', nn, 'triangle', .035);
+}
+function die(f, how) { if (f.st !== 'ok') return; f.st = 'dead'; f.how = how; f.t = 1.4; f.hop = 0; A.noise(.5, .2, how === 'eau' ? 600 : 1500, -400); A.tone(300, .6, 'square', .06, -250); }
+function updFrog(f, dt) {
+  if (f.st === 'out') return;
+  if (f.st === 'dead') {
+    if ((f.t -= dt) <= 0) { if (A.die(f.pid)) spawn(f); else f.st = 'out'; }
+    return;
+  }
+  if (f.st === 'safe') { if ((f.t -= dt) <= 0) spawn(f); return; }
+  f.time -= dt; if (f.time <= 0) { die(f, 'temps'); return; }
+  const i = A.input(f.pid);
+  if (f.hop > 0) {
+    f.hop -= dt;
+    const k = Math.min(1, dt / (f.hop + dt));
+    f.x += (f.tx - f.x) * k; f.y = rowY(f.r);
+    if (f.hop <= 0) { f.hop = 0; land(f); if (f.st !== 'ok') return; }
+  } else {
+    let d = -1;
+    if (i.upP) d = 0; else if (i.leftP) d = 1; else if (i.downP) d = 2; else if (i.rightP) d = 3;
+    if (d >= 0) {
+      const nr = f.r + DY[d], nx = f.x + DX[d] * 16;
+      f.dir = d;
+      if (nr >= 0 && nr <= 12 && nx >= 0 && nx <= W - 16) {
+        f.r = nr; f.tx = nx; f.hop = .12; A.tone(d === 0 ? 660 : 520, .05, 'square', .05);
+        if (nr < f.best) { f.best = nr; A.addScore(f.pid, 10); }
+      }
+    }
+  }
+  // transporté par un rondin / une tortue
+  const lane = LANES.find(l => l.r === f.r);
+  if (lane && lane.r <= 5 && f.hop <= 0) {
+    f.x += laneSpeed(lane) * lane.d * dt;
+    if (f.x < -6 || f.x > W - 10) die(f, 'eau');
+  }
+  // véhicules
+  if (lane && lane.r >= 7) for (const it of items(lane)) if (f.x + 13 > it.x + 1 && f.x + 3 < it.x + it.w - 1) { die(f, 'route'); return; }
+}
+function land(f) {
+  const lane = LANES.find(l => l.r === f.r);
+  if (f.r === 0) {
+    const k = BAYS.findIndex(b => Math.abs(f.x + 8 - b) < 8);
+    if (k < 0 || w.bays[k]) { die(f, 'haie'); return; }
+    w.bays[k] = f.pid + 1;
+    let pts = 50 + Math.floor(f.time * 2) * 10;
+    if (w.fly && w.fly.k === k) { pts += 200; w.fly = null; w.pops.push({ x: BAYS[k], y: rowY(0) - 8, s: 200, t: 1.5 }); }
+    A.addScore(f.pid, pts); A.melody([[523,1],[659,1],[784,2]], .08);
+    f.st = 'safe'; f.t = .6;
+    if (w.bays.every(b => b)) { w.frogs.forEach(o => A.addScore(o.pid, 1000 / w.frogs.length)); w.clearT = 3; A.jingle('bonus'); }
+    return;
+  }
+  if (lane && lane.r <= 5) {
+    const on = items(lane).some(it => it.sub < 2 && f.x + 10 > it.x && f.x + 6 < it.x + it.w);
+    if (!on) die(f, 'eau');
+  }
+}
+
+// ---------- Rendu ----------
+function drawItem(l, it) {
+  const ctx = A.ctx, x = Math.round(it.x), y = rowY(l.r) + 2;
+  const r = (c, a, b, ww, hh) => { ctx.fillStyle = c; ctx.fillRect(x + a, y + b, ww, hh); };
+  switch (l.k) {
+    case 'log':
+      r('#8a4a10', 2, 0, it.w - 4, 12); r('#b06a20', 0, 1, it.w, 10); r('#5a2a00', 2, 3, it.w - 6, 1); r('#5a2a00', 6, 8, it.w - 10, 1);
+      r('#e0a060', it.w - 3, 2, 3, 8); break;
+    case 'turtle':
+      if (it.sub === 2) break;
+      for (let k = 0; k < it.w / 16; k++) {
+        const tx = k * 16, c = it.sub ? '#208020' : '#e02020';
+        r('#30c030', tx + (l.d < 0 ? 0 : 12), 4, 3, 4); r(c, tx + 2, 1, 12, 10); r(it.sub ? '#105010' : '#801010', tx + 5, 3, 6, 6);
+        r('#30c030', tx + 3, 0, 2, 2); r('#30c030', tx + 11, 0, 2, 2); r('#30c030', tx + 3, 10, 2, 2); r('#30c030', tx + 11, 10, 2, 2);
+      }
+      break;
+    case 'truck': { const cab = l.d < 0 ? 0 : 24; r('#f0f0f0', 0, 2, 32, 8); r('#e02020', cab, 1, 8, 10); r('#203080', cab + (l.d < 0 ? 1 : 4), 3, 3, 6); r('#404040', 4, 0, 4, 2); r('#404040', 22, 0, 4, 2); r('#404040', 4, 10, 4, 2); r('#404040', 22, 10, 4, 2); break; }
+    case 'racer': r('#ffffff', 1, 3, 14, 6); r('#ffe030', 4, 2, 6, 8); r('#e02020', 1, 0, 3, 2); r('#e02020', 1, 10, 3, 2); r('#e02020', 12, 0, 3, 2); r('#e02020', 12, 10, 3, 2); break;
+    case 'car': r('#ff60d0', 1, 2, 14, 8); r('#60e0ff', 5, 3, 5, 6); r('#ffffff', 1, 0, 3, 2); r('#ffffff', 11, 0, 3, 2); r('#ffffff', 1, 10, 3, 2); r('#ffffff', 11, 10, 3, 2); break;
+    case 'dozer': r('#30c030', 2, 2, 12, 8); r('#ffffff', l.d > 0 ? 13 : 0, 0, 3, 12); r('#105010', 5, 4, 5, 4); r('#404040', 3, 0, 9, 2); r('#404040', 3, 10, 9, 2); break;
+    case 'yellow': r('#ffe030', 1, 2, 14, 8); r('#e02020', 5, 4, 5, 4); r('#ffffff', 1, 0, 3, 2); r('#ffffff', 11, 0, 3, 2); r('#ffffff', 1, 10, 3, 2); r('#ffffff', 11, 10, 3, 2); break;
+  }
+}
+function draw() {
+  const ctx = A.ctx;
+  ctx.fillStyle = '#000048'; ctx.fillRect(0, rowY(0), W, 16 * 6);
+  // berge et abris
+  ctx.fillStyle = '#30a030'; ctx.fillRect(0, rowY(0) - 8, W, 24);
+  ctx.fillStyle = '#208020'; for (let x = 0; x < W; x += 4) ctx.fillRect(x, rowY(0) - 8 + (x % 8 ? 2 : 0), 2, 2);
+  BAYS.forEach((b, k) => {
+    ctx.fillStyle = '#000048'; ctx.fillRect(b - 10, rowY(0) - 2, 20, 18);
+    if (w.bays[k]) A.draw(FROGS[w.bays[k] - 1][0][2], b - 6, rowY(0) + 2);
+    else if (w.fly && w.fly.k === k) { ctx.fillStyle = '#c0c0ff'; ctx.fillRect(b - 3, rowY(0) + 4, 2, 3); ctx.fillRect(b + 1, rowY(0) + 4, 2, 3); ctx.fillStyle = '#404040'; ctx.fillRect(b - 1, rowY(0) + 5, 2, 5); }
+  });
+  // trottoirs violets
+  for (const r of [6, 12]) { ctx.fillStyle = '#8030b0'; ctx.fillRect(0, rowY(r), W, 16); ctx.fillStyle = '#b060e0'; for (let x = 0; x < W; x += 8) ctx.fillRect(x + (r % 2 ? 0 : 4), rowY(r) + 2, 4, 2); }
+  ctx.fillStyle = '#000'; ctx.fillRect(0, rowY(7), W, 80);
+  for (let r = 7; r < 11; r++) for (let x = 0; x < W; x += 16) { ctx.fillStyle = '#606060'; ctx.fillRect(x + 4, rowY(r) + 15, 8, 1); }
+  for (const l of LANES) for (const it of items(l)) drawItem(l, it);
+  for (const f of w.frogs) {
+    if (f.st === 'out' || f.st === 'safe') continue;
+    if (f.st === 'dead') {
+      const k = Math.floor((1.4 - f.t) * 6), x = Math.round(f.x), y = rowY(f.r);
+      if (f.how === 'eau') { ctx.strokeStyle = '#80c0ff'; ctx.beginPath(); ctx.arc(x + 8, y + 8, 2 + k * 1.5, 0, 7); ctx.stroke(); }
+      else { ctx.fillStyle = k % 2 ? '#ff3030' : '#ffffff'; for (let a = 0; a < 8; a++) ctx.fillRect(x + 8 + Math.cos(a) * k * 1.4, y + 8 + Math.sin(a) * k * 1.4, 2, 2); }
+      if (k > 5) { A.text('X', x + 5, y + 4, '#fff'); }
+      continue;
+    }
+    A.draw(FROGS[f.pid][f.hop > 0 ? 1 : 0][f.dir], f.x + 2, rowY(f.r) + 2);
+  }
+  for (const p of w.pops) A.text(p.s, p.x, p.y, '#ffe030', 1, 'center');
+  // temps et vies
+  w.frogs.forEach((f, i) => {
+    const x0 = i ? W / 2 + 8 : 8, ww = W / 2 - 16, k = f.st === 'ok' ? Math.max(0, f.time / TIME) : 0;
+    ctx.fillStyle = k < .25 ? '#ff3030' : '#30e030'; ctx.fillRect(x0, H - 30, Math.round(ww * k), 4);
+    A.text('TEMPS', x0, H - 40, '#ffe030');
+    for (let n = 0; n < Math.min(A.players[i].lives - 1, 5); n++) A.draw(FROGS[i][0][0], x0 + n * 13, H - 18);
+  });
+  if (A.n === 1) A.text('NIVEAU ' + w.level, W - 8, H - 14, '#fff', 1, 'right');
+  if (w.clearT > 0) { ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.fillRect(30, 124, 164, 24); A.text('BRAVO ! NIVEAU ' + (w.level + 1), W / 2, 132, '#ffe030', 1, 'center'); }
+}
+function attract(ctx, t, y) {
+  A.draw(FROGS[0][Math.floor(t * 3) % 2][0], W / 2 - 6, y + 6);
+  A.text('PAS EN AVANT        10', W / 2, y + 28, '#fff', 1, 'center');
+  A.text('GRENOUILLE A L\'ABRI  50', W / 2, y + 40, '#fff', 1, 'center');
+  A.text('MOUCHE BONUS        200', W / 2, y + 52, '#fff', 1, 'center');
+  A.text('5 ABRIS REMPLIS    1000', W / 2, y + 64, '#fff', 1, 'center');
+  A.text('ATTENTION AUX TORTUES QUI PLONGENT', W / 2, y + 82, '#30e030', 1, 'center');
+}
+A.run({
+  id: 'grenouille', title: 'GRENOUILLE', sub: '- TRAVERSEE PERILLEUSE -', lives: 4, bonus: 20000,
+  logoColors: ['#e0ffe0','#b0ffb0','#80f080','#50e050','#30c030','#20a020','#107010','#002000'],
+  help: () => ['J1: FLECHES', 'J2: ' + ['KeyR', 'KeyF', 'KeyD', 'KeyG'].map(A.lab).join(' ')],
+  init, update, draw, attract
+});
+</script>
+</body>
+</html>
